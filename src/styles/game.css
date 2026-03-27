@@ -1329,6 +1329,31 @@
   transform: translateZ(0);
 }
 
+.betting-grid__atlas-placeholder {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: #2a2119;
+}
+
+.betting-grid__mobile-atlas-flag {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 6;
+  pointer-events: none;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  padding: 3px 5px;
+}
+
 .betting-grid__asset {
   position: absolute;
   width: auto;

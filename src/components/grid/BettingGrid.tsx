@@ -19,12 +19,14 @@ function BetCell({
   className = '',
   style,
   isHovered,
+  hideZoneText = false,
   onHoverChange,
 }: {
   zone: GridZoneConfig
   className?: string
   style?: CSSProperties
   isHovered: boolean
+  hideZoneText?: boolean
   onHoverChange: (next: boolean) => void
 }) {
   const { state, dispatch } = useGame()
@@ -51,8 +53,8 @@ function BetCell({
       onBlur={() => onHoverChange(false)}
       onClick={() => dispatch({ type: 'PLACE_BET', zoneId: zone.id })}
     >
-      <span className="bet-cell__label">{zone.label}</span>
-      {zone.sub ? <span className="bet-cell__sub">{zone.sub}</span> : null}
+      {hideZoneText ? null : <span className="bet-cell__label">{zone.label}</span>}
+      {hideZoneText ? null : (zone.sub ? <span className="bet-cell__sub">{zone.sub}</span> : null)}
       {amount > 0 ? (
         <span className="bet-cell__stake">{amount}</span>
       ) : null}
@@ -209,6 +211,7 @@ export function BettingGrid() {
   const [hoveredZoneId, setHoveredZoneId] = useState<BetZoneId | null>(null)
   const [imageCacheVersion, setImageCacheVersion] = useState(0)
   const [mobileAtlasSrc, setMobileAtlasSrc] = useState<string | null>(null)
+  const [mobileAtlasReady, setMobileAtlasReady] = useState(false)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const canvasImagesRef = useRef<Map<string, HTMLImageElement>>(new Map())
   const previousLayerStateRef = useRef<Record<string, GridVisualState>>({})
@@ -561,12 +564,14 @@ export function BettingGrid() {
   useEffect(() => {
     if (!useMobileAtlasRendering) {
       setMobileAtlasSrc(null)
+      setMobileAtlasReady(false)
       return
     }
+    setMobileAtlasReady(false)
     const dpr = typeof window === 'undefined' ? 1 : (window.devicePixelRatio || 1)
     const aspectRatio = runtimeFrameWidth / runtimeFrameHeight
-    const qualityBoost = 1.35
-    const baseTargetWidth = Math.max(runtimeFrameWidth * 2.25, runtimeWidthPx * dpr * qualityBoost)
+    const qualityBoost = 2.15
+    const baseTargetWidth = Math.max(runtimeFrameWidth * 3, runtimeWidthPx * dpr * qualityBoost)
     const maxTextureWidth = 4096
     const atlasWidth = Math.max(1, Math.min(maxTextureWidth, Math.round(baseTargetWidth)))
     const atlasHeight = Math.max(1, Math.round(atlasWidth / aspectRatio))
@@ -597,7 +602,14 @@ export function BettingGrid() {
       )
     }
     ctx.globalAlpha = 1
-    setMobileAtlasSrc(atlas.toDataURL('image/png'))
+    try {
+      setMobileAtlasSrc(atlas.toDataURL('image/png'))
+      setMobileAtlasReady(true)
+    } catch {
+      // If browser blocks data extraction (tainted source), keep runtime stable.
+      setMobileAtlasSrc(null)
+      setMobileAtlasReady(false)
+    }
   }, [
     imageCacheVersion,
     renderLayers,
@@ -692,18 +704,21 @@ export function BettingGrid() {
         }}
       >
         {useMobileAtlasRendering ? (
-          mobileAtlasSrc ? (
-            <img
-              className="betting-grid__atlas"
-              src={mobileAtlasSrc}
-              alt=""
-              draggable={false}
-              decoding="async"
-              loading="eager"
-              aria-hidden
-            />
+          mobileAtlasSrc && mobileAtlasReady ? (
+            <>
+              <img
+                className="betting-grid__atlas"
+                src={mobileAtlasSrc}
+                alt=""
+                draggable={false}
+                decoding="async"
+                loading="eager"
+                aria-hidden
+              />
+              <span className="betting-grid__mobile-atlas-flag" aria-hidden>ATLAS</span>
+            </>
           ) : (
-            <canvas ref={canvasRef} className="betting-grid__canvas" aria-hidden />
+            <div className="betting-grid__atlas-placeholder" aria-hidden />
           )
         ) : (
           <canvas ref={canvasRef} className="betting-grid__canvas" aria-hidden />
@@ -730,6 +745,7 @@ export function BettingGrid() {
                   background: 'transparent',
                 }}
                 isHovered={isHovered}
+                hideZoneText={useMobileAtlasRendering}
                 onHoverChange={(next) => setHoveredZoneId(next ? zone.id : null)}
               />
             )
