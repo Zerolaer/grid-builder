@@ -1,11 +1,11 @@
 /**
- * Связь с родительским окном (операторский сайт, iframe).
- * Расширяйте типы сообщений по мере интеграции.
+ * Bridge to parent window (operator website, iframe).
+ * Extend message types as integration grows.
  */
 
 export const PARENT_MSG = {
-  READY: 'scibo:ready',
-  RESIZE: 'scibo:resize',
+  READY: 'iki-builder:ready',
+  RESIZE: 'iki-builder:resize',
 } as const
 
 export type ParentOutboundMessage =

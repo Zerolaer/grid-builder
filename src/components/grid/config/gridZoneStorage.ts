@@ -1,7 +1,7 @@
 import type { GridZoneConfig } from './gridZones'
 
-export const GRID_ZONE_STORAGE_KEY = 'scibo:grid-zones:v1'
-export const GRID_ZONE_STORAGE_EVENT = 'scibo:grid-zones:updated'
+export const GRID_ZONE_STORAGE_KEY = 'iki-builder:grid-zones:v1'
+export const GRID_ZONE_STORAGE_EVENT = 'iki-builder:grid-zones:updated'
 
 type StoredZone = Pick<
   GridZoneConfig,

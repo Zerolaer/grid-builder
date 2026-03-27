@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useGameDispatch, useGameState } from '../game/GameContext'
 
-/** Мок: таймер тикает раз в секунду в фазе betting. */
+/** Mock behavior: timer ticks once per second during the betting phase. */
 export function useRoundTimer(): void {
   const { phase, countdownSec } = useGameState()
   const dispatch = useGameDispatch()

@@ -1,15 +1,15 @@
 import type { GameState } from './types'
 
 /**
- * Визуальное состояние подсветки геймфрейма (не путать с GamePhase).
- * - open — ставки открыты (зелёный)
- * - closing — последние секунды до закрытия (оранжевый)
- * - ended — ставки закрыты (красный)
- * - active — активная игра: бросок / результат (золотистый)
+ * Visual game-frame glow state (do not confuse with GamePhase).
+ * - open: betting is open (green)
+ * - closing: last seconds before close (orange)
+ * - ended: betting is closed (red)
+ * - active: active game state, roll/result (gold)
  */
 export type FrameVisualState = 'open' | 'closing' | 'ended' | 'active'
 
-/** Секунд «оранжевой» фазы перед закрытием. */
+/** Number of seconds for the "orange" pre-close phase. */
 export const FRAME_CLOSING_LAST_SEC = 3
 
 export function getFrameVisualState(state: GameState): FrameVisualState {

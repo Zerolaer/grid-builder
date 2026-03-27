@@ -1,9 +1,9 @@
-/** Фазы раунда — дальше сервер/WebSocket будет диктовать переходы. */
+/** Round phases; transition flow will be driven by server/WebSocket later. */
 export type GamePhase = 'betting' | 'bets_closed' | 'rolling' | 'result'
 
 export type ChipValue = 1 | 2 | 5 | 10 | 25 | 50 | 100 | 250
 
-/** Идентификатор зоны ставки на гриде (расширяем по мере добавления типов ставок). */
+/** Betting zone identifier on the grid (extend as new bet types are added). */
 export type BetZoneId =
   | 'small'
   | 'big'
@@ -25,15 +25,15 @@ export interface PlacedBet {
 
 export interface GameState {
   phase: GamePhase
-  /** Секунды до закрытия приёма (мок; потом с сервера). */
+  /** Seconds until bet intake closes (mock for now; server-driven later). */
   countdownSec: number
   balance: number
   totalBet: number
   selectedChip: ChipValue
   bets: BetMap
-  /** История для undo (порядок постановки). */
+  /** Undo history (order in which bets were placed). */
   betStack: PlacedBet[]
-  /** Последние исходы для roadmap (мок). */
+  /** Recent outcomes for roadmap UI (mock data). */
   roadmap: Array<'S' | 'B' | 'T'>
   gameId: string
   limitsLabel: string

@@ -2,9 +2,9 @@
 
 interface ImportMetaEnv {
   readonly VITE_PARENT_ORIGIN?: string
-  /** URL стрима (mp4 / HLS — в зависимости от плеера) для фона геймфрейма */
+  /** Stream URL (mp4 / HLS, depending on player) for game frame background */
   readonly VITE_STREAM_URL?: string
-  /** Статичная картинка-фон для теста (например /stream-test.jpg) */
+  /** Static background image for testing (e.g. /stream-test.jpg) */
   readonly VITE_STREAM_IMAGE?: string
 }
 

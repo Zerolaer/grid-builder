@@ -1,8 +1,8 @@
 /**
- * Фон геймфрейма:
- * 1) видео (VITE_STREAM_URL), либо
- * 2) статичная картинка (VITE_STREAM_IMAGE), либо
- * 3) fallback-градиент.
+ * Game frame background:
+ * 1) video (VITE_STREAM_URL), or
+ * 2) static image (VITE_STREAM_IMAGE), or
+ * 3) fallback gradient.
  */
 export function StreamBackground() {
   const videoSrc = import.meta.env.VITE_STREAM_URL

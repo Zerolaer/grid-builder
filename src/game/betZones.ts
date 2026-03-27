@@ -30,7 +30,7 @@ export function tripleId(n: (typeof SPECIFIC_TRIPLES)[number]): BetZoneId {
   return `triple_${n}`
 }
 
-/** Мок коэффициентов для отображения (не финансовая логика). */
+/** Mock payout labels for display only (not financial logic). */
 export function mockOddsLabel(total: number): string {
   const map: Record<number, string> = {
     4: '50:1',

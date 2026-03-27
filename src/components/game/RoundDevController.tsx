@@ -87,7 +87,7 @@ export function RoundDevController() {
         className="round-dev-controller__button"
         onClick={() => dispatch({ type: 'RESET_ROUND' })}
       >
-        Обновить раунд
+        Reset Round
       </button>
     </div>
   )

@@ -1,4 +1,4 @@
-/* Context + hooks в одном модуле — нормально для игрового состояния. */
+/* Context + hooks in a single module is fine for game state. */
 /* eslint-disable react-refresh/only-export-components */
 import {
   createContext,
@@ -42,7 +42,7 @@ export function useGame() {
   return useMemo(() => ({ state, dispatch }), [state, dispatch])
 }
 
-/** Удобные селекторы для фазы и «открыты ли ставки». */
+/** Handy selector for checking whether betting is open. */
 export function useBettingOpen(): boolean {
   const { phase } = useGameState()
   return phase === 'betting'

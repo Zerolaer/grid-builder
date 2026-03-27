@@ -1,4 +1,4 @@
-/** Заглушка: позже проценты / hot-cold с сервера. */
+/** Placeholder: percentages / hot-cold metrics will come from server later. */
 export function StatsPanel() {
   return (
     <aside className="side-panel side-panel--right" aria-label="Statistics">
