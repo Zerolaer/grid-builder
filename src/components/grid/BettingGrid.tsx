@@ -19,14 +19,14 @@ function BetCell({
   className = '',
   style,
   isHovered,
-  hideZoneText = false,
+  hideOverlayContent = false,
   onHoverChange,
 }: {
   zone: GridZoneConfig
   className?: string
   style?: CSSProperties
   isHovered: boolean
-  hideZoneText?: boolean
+  hideOverlayContent?: boolean
   onHoverChange: (next: boolean) => void
 }) {
   const { state, dispatch } = useGame()
@@ -53,9 +53,9 @@ function BetCell({
       onBlur={() => onHoverChange(false)}
       onClick={() => dispatch({ type: 'PLACE_BET', zoneId: zone.id })}
     >
-      {hideZoneText ? null : <span className="bet-cell__label">{zone.label}</span>}
-      {hideZoneText ? null : (zone.sub ? <span className="bet-cell__sub">{zone.sub}</span> : null)}
-      {amount > 0 ? (
+      {hideOverlayContent ? null : <span className="bet-cell__label">{zone.label}</span>}
+      {hideOverlayContent ? null : (zone.sub ? <span className="bet-cell__sub">{zone.sub}</span> : null)}
+      {!hideOverlayContent && amount > 0 ? (
         <span className="bet-cell__stake">{amount}</span>
       ) : null}
     </button>
@@ -705,6 +705,7 @@ export function BettingGrid() {
     >
       <div
         className="betting-grid"
+        data-render-surface={useMobileAtlasRendering ? 'atlas' : 'live'}
         style={{
           width: runtimeWidthStyle,
           aspectRatio: `${runtimeFrameWidth} / ${runtimeFrameHeight}`,
@@ -755,7 +756,7 @@ export function BettingGrid() {
                   background: 'transparent',
                 }}
                 isHovered={isHovered}
-                hideZoneText={useMobileAtlasRendering}
+                hideOverlayContent={useMobileAtlasRendering}
                 onHoverChange={(next) => setHoveredZoneId(next ? zone.id : null)}
               />
             )

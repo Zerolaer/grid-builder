@@ -1372,6 +1372,12 @@
   z-index: 4;
 }
 
+.betting-grid[data-render-surface='atlas'] .bet-cell__label,
+.betting-grid[data-render-surface='atlas'] .bet-cell__sub,
+.betting-grid[data-render-surface='atlas'] .bet-cell__stake {
+  display: none !important;
+}
+
 .betting-grid-shell[data-perspective='off'] .betting-grid {
   transform: rotateX(0deg) translateY(0) scale(1);
 }
