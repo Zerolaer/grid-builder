@@ -214,7 +214,7 @@ function detectRuntimeDeviceMode(): RuntimeDeviceMode {
 export function selectProjectPackage(project: GridProject | undefined, mode: RuntimeDeviceMode): GridPackage | null {
   if (!project) return null
   const pkg = mode === 'mobile'
-    ? (project.mobilePkg ?? null)
+    ? (project.mobilePkg ?? project.pkg ?? null)
     : project.pkg
   if (!pkg) return null
   return normalizeGridPackage(pkg)
@@ -347,7 +347,9 @@ export function loadGridPackage(deviceMode?: RuntimeDeviceMode): GridPackage | n
   // Prefer latest explicitly published runtime snapshot.
   const runtimeSnapshot = loadRuntimePackagesSnapshot()
   if (runtimeSnapshot) {
-    const fromSnapshot = runtimeMode === 'mobile' ? runtimeSnapshot.mobilePkg : runtimeSnapshot.desktopPkg
+    const fromSnapshot = runtimeMode === 'mobile'
+      ? (runtimeSnapshot.mobilePkg ?? runtimeSnapshot.desktopPkg)
+      : runtimeSnapshot.desktopPkg
     if (fromSnapshot) return fromSnapshot
   }
 

@@ -1304,6 +1304,31 @@
   contain: layout;
 }
 
+.betting-grid__canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  display: block;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.betting-grid__atlas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  z-index: 0;
+  object-fit: fill;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transform: translateZ(0);
+}
+
 .betting-grid__asset {
   position: absolute;
   width: auto;
@@ -1327,7 +1352,12 @@
 }
 
 .betting-grid-shell[data-perspective='on'] .betting-grid {
-  transform: rotateX(var(--grid-tilt-angle, 56deg)) translateY(-4px) scale(var(--grid-tilt-scale, 0.97));
+  transform: rotateX(var(--grid-tilt-angle, 56deg)) translateY(0) scale(var(--grid-tilt-scale, 0.97));
+}
+
+.betting-grid-shell > .betting-grid {
+  margin-top: auto !important;
+  margin-bottom: 0 !important;
 }
 
 .bet-cell {
@@ -2003,16 +2033,18 @@ button:focus-visible {
     min-height: 100dvh !important;
     margin: 0 !important;
     position: absolute;
-    left: 50%;
-    bottom: 120px;
-    transform: translateX(-50%);
+    left: 0;
+    right: 0;
+    bottom: 24px;
+    transform: none;
+    margin-inline: auto !important;
     flex: 0 0 auto;
     min-height: auto;
     height: auto;
   }
 
   .main-stage:has(.betting-grid-shell[data-perspective='off']) > .grid-column {
-    bottom: 116px;
+    bottom: 20px;
   }
 
   .grid-column {
@@ -2050,7 +2082,7 @@ button:focus-visible {
   .betting-grid-shell[data-perspective='off'] .betting-grid {
     width: 100% !important;
     max-width: 100% !important;
-    transform: translateY(-13%) scale(1.7);
+    transform: translateY(0) scale(1);
     transform-origin: center bottom;
   }
 
@@ -2084,7 +2116,8 @@ button:focus-visible {
 
   .game-frame__viewport {
     padding: 8px 10px 0;
-    overflow: auto;
+    overflow-x: visible;
+    overflow-y: auto;
   }
 
   .game-frame__viewport .game-frame__content {
@@ -2094,7 +2127,7 @@ button:focus-visible {
     border: 0;
     box-shadow: none;
     background: transparent;
-    overflow: hidden;
+    overflow: visible;
   }
 
   /* Hide timer only in explicit mobile preview mode to avoid duplicate header UI. */
@@ -2146,16 +2179,18 @@ button:focus-visible {
   min-height: 100dvh !important;
   margin: 0 !important;
   position: absolute;
-  left: 50%;
-  bottom: 120px;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  bottom: 24px;
+  transform: none;
+  margin-inline: auto !important;
   flex: 0 0 auto;
   min-height: auto;
   height: auto;
 }
 
 .game-frame-shell[data-mobile-preview='on'] .main-stage:has(.betting-grid-shell[data-perspective='off']) > .grid-column {
-  bottom: 116px;
+  bottom: 20px;
 }
 
 .game-frame-shell[data-mobile-preview='on'] .stage-side-block {
@@ -2170,7 +2205,7 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  align-items: stretch;
+  align-items: center;
 }
 
 .game-frame-shell[data-mobile-preview='on'] .betting-grid-shell {
@@ -2185,6 +2220,7 @@ button:focus-visible {
   flex-direction: column;
   justify-content: flex-end;
   transform: none;
+  align-self: center;
 }
 
 .game-frame-shell[data-mobile-preview='on'] .betting-grid-shell .betting-grid {
@@ -2197,25 +2233,24 @@ button:focus-visible {
 .game-frame-shell[data-mobile-preview='on'] .betting-grid-shell[data-perspective='off'] .betting-grid {
   width: 100% !important;
   max-width: 100% !important;
-  transform: translateY(-13%) scale(1.7);
+  transform: translateY(0) scale(1);
   transform-origin: center bottom;
-}
-
-.game-frame-shell[data-mobile-preview='on'] .betting-grid-shell[data-perspective='off'] {
-  width: 100% !important;
-  max-width: 100% !important;
-  margin: 0 auto !important;
 }
 
 .game-frame-shell[data-mobile-preview='on'] .game-frame__viewport {
   padding: 8px 10px 0;
-  overflow: auto;
+  overflow-x: visible;
+  overflow-y: auto;
 }
 
 .game-frame-shell[data-mobile-preview='on'] .game-frame {
   width: 100%;
   height: 100%;
   min-height: 0;
+  overflow: visible;
+}
+
+.game-frame-shell[data-mobile-preview='on'] .game-frame__viewport .game-frame__content {
   overflow: visible;
 }
 
@@ -2239,8 +2274,10 @@ button:focus-visible {
   .betting-grid {
     width: 100% !important;
     max-width: 100% !important;
-    transform-style: preserve-3d;
-    will-change: transform;
+    transform-style: flat;
+    will-change: auto;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
   }
 
   .betting-grid,
@@ -2251,31 +2288,34 @@ button:focus-visible {
   }
 
   .betting-grid__asset-layer {
-    transform: translateZ(0.1px);
+    transform: none;
   }
 
   .betting-grid__asset {
-    image-rendering: auto;
-    transform: translateZ(0.1px);
-    will-change: transform, opacity;
+    image-rendering: -webkit-optimize-contrast;
+    image-rendering: crisp-edges;
+    transform: none;
+    will-change: auto;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
   }
 
   .betting-grid-shell[data-perspective='on'] .betting-grid {
-    transform: rotateX(var(--grid-tilt-angle, 48deg)) translateY(-13%) scale(1.53) !important;
+    transform: rotateX(var(--grid-tilt-angle, 48deg)) translateY(0) scale(1) !important;
     transform-origin: center bottom;
   }
 
   .game-frame-shell[data-mobile-preview='on'] .betting-grid-shell[data-perspective='on'] .betting-grid {
-    transform: rotateX(var(--grid-tilt-angle, 48deg)) translateY(-13%) scale(1.53) !important;
+    transform: rotateX(var(--grid-tilt-angle, 48deg)) translateY(0) scale(1) !important;
     transform-origin: center bottom;
   }
 
   .main-stage:has(.betting-grid-shell[data-perspective='on']) > .grid-column {
-    bottom: 128px;
+    bottom: 32px;
   }
 
   .game-frame-shell[data-mobile-preview='on'] .main-stage:has(.betting-grid-shell[data-perspective='on']) > .grid-column {
-    bottom: 128px;
+    bottom: 32px;
   }
 
   .bottom-bar {

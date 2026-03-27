@@ -1,6 +1,6 @@
 import { useBettingOpen, useGame } from '../../game/GameContext'
 import type { BetZoneId } from '../../game/types'
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useQuery } from 'convex/react'
 import { api } from '../../../convex/_generated/api'
 import { createDefaultGridPackage } from './builder/defaultPackage'
@@ -207,6 +207,10 @@ export function BettingGrid() {
       : state.gridViewState
   const [runtimeDeviceMode, setRuntimeDeviceMode] = useState<'desktop' | 'mobile'>(() => detectViewportMode())
   const [hoveredZoneId, setHoveredZoneId] = useState<BetZoneId | null>(null)
+  const [imageCacheVersion, setImageCacheVersion] = useState(0)
+  const [mobileAtlasSrc, setMobileAtlasSrc] = useState<string | null>(null)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const canvasImagesRef = useRef<Map<string, HTMLImageElement>>(new Map())
   const previousLayerStateRef = useRef<Record<string, GridVisualState>>({})
   const latestPublishedPackagesRef = useRef<{
     desktop: GridPackage | null
@@ -355,9 +359,46 @@ export function BettingGrid() {
   }, [runtimeDeviceMode])
   const frameWidth = gridPackage.frame.width > 0 ? gridPackage.frame.width : GRID_SKIN.baseWidth
   const frameHeight = gridPackage.frame.height > 0 ? gridPackage.frame.height : GRID_SKIN.baseHeight
-  const isMobileRuntime = runtimeDeviceMode === 'mobile'
-  const runtimeFrameWidth = frameWidth
-  const runtimeFrameHeight = frameHeight
+  const rawClipRect = gridPackage.global?.clipRect ?? { x: 0, y: 0, width: frameWidth, height: frameHeight }
+  const runtimeBounds = useMemo(() => {
+    let minX = Number.isFinite(rawClipRect.x) ? rawClipRect.x : 0
+    let minY = Number.isFinite(rawClipRect.y) ? rawClipRect.y : 0
+    let maxX = minX + (Number.isFinite(rawClipRect.width) ? rawClipRect.width : frameWidth)
+    let maxY = minY + (Number.isFinite(rawClipRect.height) ? rawClipRect.height : frameHeight)
+
+    for (const layer of gridPackage.layers) {
+      const rects = [
+        { x: layer.x, y: layer.y, width: layer.width, height: layer.height },
+        ...(layer.stateRects ? Object.values(layer.stateRects) : []),
+      ]
+      for (const rect of rects) {
+        if (!rect) continue
+        const x = Number.isFinite(rect.x) ? rect.x : 0
+        const y = Number.isFinite(rect.y) ? rect.y : 0
+        const w = Number.isFinite(rect.width) ? rect.width : 0
+        const h = Number.isFinite(rect.height) ? rect.height : 0
+        minX = Math.min(minX, x)
+        minY = Math.min(minY, y)
+        maxX = Math.max(maxX, x + w)
+        maxY = Math.max(maxY, y + h)
+      }
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+      return { x: 0, y: 0, width: frameWidth, height: frameHeight }
+    }
+
+    return {
+      x: minX,
+      y: minY,
+      width: Math.max(1, maxX - minX),
+      height: Math.max(1, maxY - minY),
+    }
+  }, [frameHeight, frameWidth, gridPackage.layers, rawClipRect.height, rawClipRect.width, rawClipRect.x, rawClipRect.y])
+  const runtimeOriginX = runtimeBounds.x
+  const runtimeOriginY = runtimeBounds.y
+  const runtimeFrameWidth = runtimeBounds.width
+  const runtimeFrameHeight = runtimeBounds.height
 
   const runtimeZones: GridZoneConfig[] = useMemo(
     () =>
@@ -418,16 +459,23 @@ export function BettingGrid() {
           const animationStyle = layerAnimationStyle(layer, previousState, activeState)
           const animationOpacity = animationStyle.opacity as number | undefined
           if (!visual.visible) return null
+          const shiftedRect = {
+            x: visual.rect.x - runtimeOriginX,
+            y: visual.rect.y - runtimeOriginY,
+            width: visual.rect.width,
+            height: visual.rect.height,
+          }
           return {
             id: layer.id,
             name: layer.name,
             activeState,
             src: visual.src,
+            rect: shiftedRect,
             style: {
-              left: `${(visual.rect.x / runtimeFrameWidth) * 100}%`,
-              top: `${(visual.rect.y / runtimeFrameHeight) * 100}%`,
-              width: `${(visual.rect.width / runtimeFrameWidth) * 100}%`,
-              height: `${(visual.rect.height / runtimeFrameHeight) * 100}%`,
+              left: `${(shiftedRect.x / runtimeFrameWidth) * 100}%`,
+              top: `${(shiftedRect.y / runtimeFrameHeight) * 100}%`,
+              width: `${(shiftedRect.width / runtimeFrameWidth) * 100}%`,
+              height: `${(shiftedRect.height / runtimeFrameHeight) * 100}%`,
               ...animationStyle,
               opacity:
                 animationOpacity === undefined
@@ -437,7 +485,14 @@ export function BettingGrid() {
             } as CSSProperties,
           }
         })
-        .filter((item): item is { id: string; name: string; activeState: 'default' | 'hover'; src: string; style: CSSProperties } => item !== null),
+        .filter((item): item is {
+          id: string
+          name: string
+          activeState: 'default' | 'hover'
+          src: string
+          rect: { x: number; y: number; width: number; height: number }
+          style: CSSProperties
+        } => item !== null),
     [
       gridPackage,
       globalGridState,
@@ -445,6 +500,8 @@ export function BettingGrid() {
       hoveredZoneId,
       runtimeFrameWidth,
       runtimeFrameHeight,
+      runtimeOriginX,
+      runtimeOriginY,
     ],
   )
 
@@ -455,30 +512,162 @@ export function BettingGrid() {
   }, [renderLayers])
   const perspective = isClosed && (gridPackage.global?.closedMode ?? 'tilted') === 'tilted'
   const runtimeScale =
-    typeof gridPackage.frame?.scale === 'number' && gridPackage.frame.scale > 0
+    (typeof gridPackage.frame?.scale === 'number' && gridPackage.frame.scale > 0
       ? gridPackage.frame.scale
-      : GRID_SKIN.scale
+      : GRID_SKIN.scale) * 1.15
   const runtimeWidthPx = runtimeFrameWidth * runtimeScale
-  const runtimeWidthStyle = isMobileRuntime ? '100%' : `min(100%, ${runtimeWidthPx}px)`
-  const clipRect = gridPackage.global.clipRect ?? {
-    x: 0,
-    y: 0,
-    width: runtimeFrameWidth,
-    height: runtimeFrameHeight,
-  }
-  const clipTopPct = (clipRect.y / runtimeFrameHeight) * 100
-  const clipRightPct = ((runtimeFrameWidth - (clipRect.x + clipRect.width)) / runtimeFrameWidth) * 100
-  const clipBottomPct = ((runtimeFrameHeight - (clipRect.y + clipRect.height)) / runtimeFrameHeight) * 100
-  const clipLeftPct = (clipRect.x / runtimeFrameWidth) * 100
-  const runtimeClipPath = perspective && !isMobileRuntime
-    ? `inset(${clipTopPct}% ${clipRightPct}% ${clipBottomPct}% ${clipLeftPct}%)`
-    : 'none'
+  const runtimeWidthStyle = `${runtimeWidthPx}px`
+  const runtimeClipPath = 'none'
+  const isMobileRuntime = runtimeDeviceMode === 'mobile'
+  // Prototype: on mobile render the full grid into a high-resolution atlas image.
+  // The 3D tilt/scale still applies to the container, but source texture is denser.
+  const useMobileAtlasRendering = isMobileRuntime
 
   const baseTiltAngle = gridPackage.global?.tiltAngleDeg ?? 56
   // Mobile keeps the tilt feature, but with a slightly softer angle and no extra downscale.
   // This reduces GPU raster blur while preserving the closed-state perspective effect.
   const tiltAngleDeg = runtimeDeviceMode === 'mobile' ? Math.min(baseTiltAngle, 48) : baseTiltAngle
   const tiltScale = runtimeDeviceMode === 'mobile' ? 1 : 0.97
+  const runtimeOversampleScale = 1
+
+  useEffect(() => {
+    let cancelled = false
+    const imageCache = canvasImagesRef.current
+    const pending = renderLayers
+      .map((layer) => layer.src)
+      .filter((src, index, arr) => arr.indexOf(src) === index)
+      .filter((src) => !imageCache.has(src))
+
+    if (pending.length === 0) return
+
+    for (const src of pending) {
+      const img = new Image()
+      img.decoding = 'async'
+      img.onload = () => {
+        if (cancelled) return
+        if (!imageCache.has(src)) {
+          imageCache.set(src, img)
+          setImageCacheVersion((prev) => prev + 1)
+        }
+      }
+      img.src = src
+    }
+
+    return () => {
+      cancelled = true
+    }
+  }, [renderLayers])
+
+  useEffect(() => {
+    if (!useMobileAtlasRendering) {
+      setMobileAtlasSrc(null)
+      return
+    }
+    const dpr = typeof window === 'undefined' ? 1 : (window.devicePixelRatio || 1)
+    const aspectRatio = runtimeFrameWidth / runtimeFrameHeight
+    const qualityBoost = 1.35
+    const baseTargetWidth = Math.max(runtimeFrameWidth * 2.25, runtimeWidthPx * dpr * qualityBoost)
+    const maxTextureWidth = 4096
+    const atlasWidth = Math.max(1, Math.min(maxTextureWidth, Math.round(baseTargetWidth)))
+    const atlasHeight = Math.max(1, Math.round(atlasWidth / aspectRatio))
+    const atlas = document.createElement('canvas')
+    atlas.width = atlasWidth
+    atlas.height = atlasHeight
+    const ctx = atlas.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.clearRect(0, 0, atlasWidth, atlasHeight)
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+    const scaleX = atlasWidth / runtimeFrameWidth
+    const scaleY = atlasHeight / runtimeFrameHeight
+    for (const layer of renderLayers) {
+      const img = canvasImagesRef.current.get(layer.src)
+      if (!img) continue
+      const opacityValue = Number(layer.style.opacity ?? 1)
+      const opacity = Number.isFinite(opacityValue) ? opacityValue : 1
+      if (opacity <= 0) continue
+      ctx.globalAlpha = opacity
+      ctx.drawImage(
+        img,
+        layer.rect.x * scaleX,
+        layer.rect.y * scaleY,
+        layer.rect.width * scaleX,
+        layer.rect.height * scaleY,
+      )
+    }
+    ctx.globalAlpha = 1
+    setMobileAtlasSrc(atlas.toDataURL('image/png'))
+  }, [
+    imageCacheVersion,
+    renderLayers,
+    runtimeFrameHeight,
+    runtimeFrameWidth,
+    runtimeWidthPx,
+    useMobileAtlasRendering,
+  ])
+
+  useLayoutEffect(() => {
+    if (useMobileAtlasRendering) return
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const draw = () => {
+      const dpr = window.devicePixelRatio || 1
+      const cssWidth = Math.max(1, Math.round(canvas.clientWidth))
+      const cssHeight = Math.max(1, Math.round(canvas.clientHeight))
+      const renderScale = runtimeOversampleScale
+      const physicalWidth = Math.max(1, Math.round(cssWidth * dpr * renderScale))
+      const physicalHeight = Math.max(1, Math.round(cssHeight * dpr * renderScale))
+
+      if (canvas.width !== physicalWidth || canvas.height !== physicalHeight) {
+        canvas.width = physicalWidth
+        canvas.height = physicalHeight
+      }
+
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      ctx.setTransform(dpr * renderScale, 0, 0, dpr * renderScale, 0, 0)
+      ctx.clearRect(0, 0, cssWidth, cssHeight)
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = 'high'
+
+      const scaleX = cssWidth / runtimeFrameWidth
+      const scaleY = cssHeight / runtimeFrameHeight
+
+      for (const layer of renderLayers) {
+        const img = canvasImagesRef.current.get(layer.src)
+        if (!img) continue
+        const opacityValue = Number(layer.style.opacity ?? 1)
+        const opacity = Number.isFinite(opacityValue) ? opacityValue : 1
+        if (opacity <= 0) continue
+        ctx.globalAlpha = opacity
+        ctx.drawImage(
+          img,
+          layer.rect.x * scaleX,
+          layer.rect.y * scaleY,
+          layer.rect.width * scaleX,
+          layer.rect.height * scaleY,
+        )
+      }
+      ctx.globalAlpha = 1
+    }
+
+    draw()
+    const resizeObserver = new ResizeObserver(() => draw())
+    resizeObserver.observe(canvas)
+
+    return () => {
+      resizeObserver.disconnect()
+    }
+  }, [
+    imageCacheVersion,
+    renderLayers,
+    runtimeFrameHeight,
+    runtimeFrameWidth,
+    runtimeOversampleScale,
+    useMobileAtlasRendering,
+  ])
 
   return (
     <div
@@ -502,17 +691,23 @@ export function BettingGrid() {
           clipPath: runtimeClipPath,
         }}
       >
-        <div className="betting-grid__asset-layer" aria-hidden>
-          {renderLayers.map((layer) => (
+        {useMobileAtlasRendering ? (
+          mobileAtlasSrc ? (
             <img
-              key={layer.id}
-              className="betting-grid__asset"
-              src={layer.src}
-              alt={layer.name}
-              style={layer.style}
+              className="betting-grid__atlas"
+              src={mobileAtlasSrc}
+              alt=""
+              draggable={false}
+              decoding="async"
+              loading="eager"
+              aria-hidden
             />
-          ))}
-        </div>
+          ) : (
+            <canvas ref={canvasRef} className="betting-grid__canvas" aria-hidden />
+          )
+        ) : (
+          <canvas ref={canvasRef} className="betting-grid__canvas" aria-hidden />
+        )}
         <div className="betting-grid__zones">
           {runtimeZones.map((zone) => {
             const visual: GridVisualState =
@@ -525,8 +720,8 @@ export function BettingGrid() {
                 className={`bet-cell--${zone.skin ?? 'default'} bet-cell--state-${visual}`}
                 style={{
                   ...pxRect(
-                    zone.rect.x,
-                    zone.rect.y,
+                    zone.rect.x - runtimeOriginX,
+                    zone.rect.y - runtimeOriginY,
                     zone.rect.w,
                     zone.rect.h,
                     runtimeFrameWidth,
