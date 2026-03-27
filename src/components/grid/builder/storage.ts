@@ -214,6 +214,73 @@ type RuntimePackagesSnapshot = {
   mobilePkg: GridPackage | null
 }
 
+function pickLayerSourceForAtlas(layer: GridPackage['layers'][number]): string {
+  return layer.stateSvgs?.default ?? layer.src
+}
+
+export async function buildRuntimeAtlasForPackage(
+  pkg: GridPackage | null,
+  qualityScale = 3,
+  maxTextureWidth = 4096,
+): Promise<GridPackage | null> {
+  if (!pkg) return null
+  if (typeof window === 'undefined') return pkg
+  const frameWidth = pkg.frame?.width > 0 ? pkg.frame.width : 1
+  const frameHeight = pkg.frame?.height > 0 ? pkg.frame.height : 1
+  const targetWidth = Math.max(1, Math.min(maxTextureWidth, Math.round(frameWidth * qualityScale)))
+  const targetHeight = Math.max(1, Math.round((targetWidth / frameWidth) * frameHeight))
+  const layers = pkg.layers.slice().sort((a, b) => a.zIndex - b.zIndex)
+  const uniqueSources = Array.from(new Set(layers.map((layer) => pickLayerSourceForAtlas(layer))))
+  const loadImage = (src: string) =>
+    new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image()
+      img.decoding = 'sync'
+      img.onload = () => resolve(img)
+      img.onerror = () => reject(new Error(`atlas-image-load-failed:${src.slice(0, 64)}`))
+      img.src = src
+    })
+  const imageEntries = await Promise.all(uniqueSources.map(async (src) => [src, await loadImage(src)] as const))
+  const imageMap = new Map<string, HTMLImageElement>(imageEntries)
+
+  const canvas = document.createElement('canvas')
+  canvas.width = targetWidth
+  canvas.height = targetHeight
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return pkg
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.clearRect(0, 0, targetWidth, targetHeight)
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  const scaleX = targetWidth / frameWidth
+  const scaleY = targetHeight / frameHeight
+
+  for (const layer of layers) {
+    const style = layer.stateStyles?.default ?? { visible: true, opacity: 1 }
+    if (!style.visible || style.opacity <= 0) continue
+    const src = pickLayerSourceForAtlas(layer)
+    const image = imageMap.get(src)
+    if (!image) continue
+    ctx.globalAlpha = Math.max(0, Math.min(1, style.opacity))
+    ctx.drawImage(
+      image,
+      layer.x * scaleX,
+      layer.y * scaleY,
+      layer.width * scaleX,
+      layer.height * scaleY,
+    )
+  }
+  ctx.globalAlpha = 1
+  const atlasSrc = canvas.toDataURL('image/png')
+  const nextPkg = structuredClone(pkg)
+  nextPkg.global.runtimeAtlas = {
+    src: atlasSrc,
+    width: targetWidth,
+    height: targetHeight,
+    updatedAt: new Date().toISOString(),
+  }
+  return nextPkg
+}
+
 function detectRuntimeDeviceMode(): RuntimeDeviceMode {
   return detectMobileRuntime() ? 'mobile' : 'desktop'
 }
@@ -632,6 +699,16 @@ export function publishGridProjectsState(state?: GridProjectsState, deviceMode?:
   const mode = deviceMode ?? detectRuntimeDeviceMode()
   const desktopPkg = active ? selectProjectPackage(active, 'desktop') : null
   const mobilePkg = active ? selectProjectPackage(active, 'mobile') : null
+  publishRuntimePackages(desktopPkg, mobilePkg, mode)
+}
+
+export function publishRuntimePackages(
+  desktopPkg: GridPackage | null,
+  mobilePkg: GridPackage | null,
+  deviceMode?: RuntimeDeviceMode,
+): void {
+  if (typeof window === 'undefined') return
+  const mode = deviceMode ?? detectRuntimeDeviceMode()
   saveRuntimePackagesSnapshot(desktopPkg, mobilePkg)
   const pkg = mode === 'mobile' ? mobilePkg : desktopPkg
   const detail = { pkg, mode, desktopPkg, mobilePkg }

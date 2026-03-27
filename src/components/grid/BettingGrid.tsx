@@ -221,8 +221,6 @@ export function BettingGrid() {
   const [runtimeDeviceMode, setRuntimeDeviceMode] = useState<'desktop' | 'mobile'>(() => detectViewportMode())
   const [hoveredZoneId, setHoveredZoneId] = useState<BetZoneId | null>(null)
   const [imageCacheVersion, setImageCacheVersion] = useState(0)
-  const [mobileAtlasSrc, setMobileAtlasSrc] = useState<string | null>(null)
-  const [mobileAtlasReady, setMobileAtlasReady] = useState(false)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const canvasImagesRef = useRef<Map<string, HTMLImageElement>>(new Map())
   const previousLayerStateRef = useRef<Record<string, GridVisualState>>({})
@@ -532,9 +530,9 @@ export function BettingGrid() {
   const runtimeWidthStyle = `${runtimeWidthPx}px`
   const runtimeClipPath = 'none'
   const isMobileRuntime = runtimeDeviceMode === 'mobile'
-  // Prototype: on mobile render the full grid into a high-resolution atlas image.
-  // The 3D tilt/scale still applies to the container, but source texture is denser.
-  const useMobileAtlasRendering = isMobileRuntime
+  const publishedMobileAtlasSrc = gridPackage.global?.runtimeAtlas?.src ?? null
+  // Mobile runtime renders a prebuilt atlas generated during builder publish.
+  const useMobileAtlasRendering = isMobileRuntime && Boolean(publishedMobileAtlasSrc)
 
   const baseTiltAngle = gridPackage.global?.tiltAngleDeg ?? 56
   // Mobile keeps the tilt feature, but with a slightly softer angle and no extra downscale.
@@ -570,64 +568,6 @@ export function BettingGrid() {
       cancelled = true
     }
   }, [renderLayers])
-
-  useEffect(() => {
-    if (!useMobileAtlasRendering) {
-      setMobileAtlasSrc(null)
-      setMobileAtlasReady(false)
-      return
-    }
-    setMobileAtlasReady(false)
-    const dpr = typeof window === 'undefined' ? 1 : (window.devicePixelRatio || 1)
-    const aspectRatio = runtimeFrameWidth / runtimeFrameHeight
-    const qualityBoost = 2.15
-    const baseTargetWidth = Math.max(runtimeFrameWidth * 3, runtimeWidthPx * dpr * qualityBoost)
-    const maxTextureWidth = 4096
-    const atlasWidth = Math.max(1, Math.min(maxTextureWidth, Math.round(baseTargetWidth)))
-    const atlasHeight = Math.max(1, Math.round(atlasWidth / aspectRatio))
-    const atlas = document.createElement('canvas')
-    atlas.width = atlasWidth
-    atlas.height = atlasHeight
-    const ctx = atlas.getContext('2d')
-    if (!ctx) return
-    ctx.setTransform(1, 0, 0, 1, 0, 0)
-    ctx.clearRect(0, 0, atlasWidth, atlasHeight)
-    ctx.imageSmoothingEnabled = true
-    ctx.imageSmoothingQuality = 'high'
-    const scaleX = atlasWidth / runtimeFrameWidth
-    const scaleY = atlasHeight / runtimeFrameHeight
-    for (const layer of renderLayers) {
-      const img = canvasImagesRef.current.get(layer.src)
-      if (!img) continue
-      const opacityValue = Number(layer.style.opacity ?? 1)
-      const opacity = Number.isFinite(opacityValue) ? opacityValue : 1
-      if (opacity <= 0) continue
-      ctx.globalAlpha = opacity
-      ctx.drawImage(
-        img,
-        layer.rect.x * scaleX,
-        layer.rect.y * scaleY,
-        layer.rect.width * scaleX,
-        layer.rect.height * scaleY,
-      )
-    }
-    ctx.globalAlpha = 1
-    try {
-      setMobileAtlasSrc(atlas.toDataURL('image/png'))
-      setMobileAtlasReady(true)
-    } catch {
-      // If browser blocks data extraction (tainted source), keep runtime stable.
-      setMobileAtlasSrc(null)
-      setMobileAtlasReady(false)
-    }
-  }, [
-    imageCacheVersion,
-    renderLayers,
-    runtimeFrameHeight,
-    runtimeFrameWidth,
-    runtimeWidthPx,
-    useMobileAtlasRendering,
-  ])
 
   useLayoutEffect(() => {
     if (useMobileAtlasRendering) return
@@ -715,11 +655,11 @@ export function BettingGrid() {
         }}
       >
         {useMobileAtlasRendering ? (
-          mobileAtlasSrc && mobileAtlasReady ? (
+          publishedMobileAtlasSrc ? (
             <>
               <img
                 className="betting-grid__atlas"
-                src={mobileAtlasSrc}
+                src={publishedMobileAtlasSrc}
                 alt=""
                 draggable={false}
                 decoding="async"
@@ -728,9 +668,7 @@ export function BettingGrid() {
               />
               <span className="betting-grid__mobile-atlas-flag" aria-hidden>ATLAS</span>
             </>
-          ) : (
-            <div className="betting-grid__atlas-placeholder" aria-hidden />
-          )
+          ) : null
         ) : (
           <canvas ref={canvasRef} className="betting-grid__canvas" aria-hidden />
         )}

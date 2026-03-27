@@ -98,6 +98,12 @@ export interface GridPackage {
       width: number
       height: number
     }
+    runtimeAtlas?: {
+      src: string
+      width: number
+      height: number
+      updatedAt: string
+    }
   }
   components: GridComponent[]
   layers: GridLayer[]

@@ -1,7 +1,15 @@
 import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { createDefaultGridPackage, createEmptyGridPackage } from '../components/grid/builder/defaultPackage'
-import { loadGridProjectsState, publishGridProjectsState, saveGridProjectsState, saveGridProjectsStateNow, selectProjectPackage, touchInMemoryState } from '../components/grid/builder/storage'
+import {
+  buildRuntimeAtlasForPackage,
+  loadGridProjectsState,
+  publishRuntimePackages,
+  saveGridProjectsState,
+  saveGridProjectsStateNow,
+  selectProjectPackage,
+  touchInMemoryState,
+} from '../components/grid/builder/storage'
 import { useConvexGridSync } from '../hooks/useConvexGridSync'
 import { usePublishRuntimeGrid } from '../hooks/usePublishRuntimeGrid'
 import { ProfileButton } from '../auth/ProfileButton'
@@ -890,16 +898,18 @@ export function GridCanvasBuilder() {
       const shouldPublishToRuntime = runtimeFingerprint !== lastRuntimePublishFingerprintRef.current
       saveGridProjectsStateNow(projectsState)
       if (shouldPublishToRuntime) {
-        publishGridProjectsState(projectsState, deviceModeRef.current)
+        const active = projectsState.projects.find((p) => p.id === projectsState.activeProjectId)
+        const desktopPkg = await buildRuntimeAtlasForPackage(selectProjectPackage(active, 'desktop'))
+        const mobilePkg = await buildRuntimeAtlasForPackage(selectProjectPackage(active, 'mobile'))
+        publishRuntimePackages(desktopPkg, mobilePkg, deviceModeRef.current)
         lastRuntimePublishFingerprintRef.current = runtimeFingerprint
+        await Promise.all([
+          saveToCloudNow(),
+          publishRuntimeGridToCloud(desktopPkg, mobilePkg),
+        ])
+      } else {
+        await saveToCloudNow()
       }
-      const active = projectsState.projects.find((p) => p.id === projectsState.activeProjectId)
-      const desktopPkg = selectProjectPackage(active, 'desktop')
-      const mobilePkg = selectProjectPackage(active, 'mobile')
-      await Promise.all([
-        saveToCloudNow(),
-        publishRuntimeGridToCloud(desktopPkg, mobilePkg),
-      ])
       setUpdateRuntimeStatus('success')
     } catch {
       setUpdateRuntimeStatus('error')
