@@ -1,3 +1,4 @@
+import { useConvexAuth } from 'convex/react'
 import { BettingGrid } from './components/grid/BettingGrid'
 import { BottomBar } from './components/bottom/BottomBar'
 import { GameFrame } from './components/game/GameFrame'
@@ -5,12 +6,17 @@ import { GameShell } from './components/layout/GameShell'
 import { TopBar } from './components/top/TopBar'
 import { GridCanvasBuilder } from './dev/GridCanvasBuilder'
 import { GridZoneEditor } from './dev/GridZoneEditor'
+import { LoginPage } from './auth/LoginPage'
 
 function App() {
+  const { isAuthenticated, isLoading } = useConvexAuth()
+
   if (typeof window !== 'undefined' && window.location.pathname === '/dev/grid-editor') {
     return <GridZoneEditor />
   }
   if (typeof window !== 'undefined' && window.location.pathname === '/dev/grid-builder') {
+    if (isLoading) return <div className="auth-loading" />
+    if (!isAuthenticated) return <LoginPage />
     return <GridCanvasBuilder />
   }
 

@@ -70,12 +70,12 @@ if (typeof window !== 'undefined') {
   })
 }
 
-function encodeState(state: GridProjectsState): string {
+export function encodeState(state: GridProjectsState): string {
   const raw = JSON.stringify(state)
   return `${COMPRESSED_PREFIX}${compressToUTF16(raw)}`
 }
 
-function decodeState(raw: string): GridProjectsState | null {
+export function decodeState(raw: string): GridProjectsState | null {
   try {
     const json =
       raw.startsWith(COMPRESSED_PREFIX)
@@ -108,6 +108,7 @@ function readWindowNameState(): GridProjectsState | null {
     parsed.projects = parsed.projects.map((project) => ({
       ...project,
       pkg: normalizeGridPackage(project.pkg),
+      mobilePkg: project.mobilePkg ? normalizeGridPackage(project.mobilePkg) : undefined,
     }))
     return parsed
   } catch {
@@ -305,6 +306,7 @@ export function loadGridProjectsState(): GridProjectsState {
       parsed.projects = parsed.projects.map((project) => ({
         ...project,
         pkg: normalizeGridPackage(project.pkg),
+        mobilePkg: project.mobilePkg ? normalizeGridPackage(project.mobilePkg) : undefined,
       }))
       return parsed
     }

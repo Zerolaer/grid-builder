@@ -2,6 +2,8 @@ import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useStat
 import { createPortal } from 'react-dom'
 import { createDefaultGridPackage, createEmptyGridPackage } from '../components/grid/builder/defaultPackage'
 import { loadGridProjectsState, publishGridProjectsState, saveGridProjectsState, touchInMemoryState } from '../components/grid/builder/storage'
+import { useConvexGridSync } from '../hooks/useConvexGridSync'
+import { ProfileButton } from '../auth/ProfileButton'
 import type { BetZoneId } from '../game/types'
 import type { GridLayer, GridPackage, GridProject, GridProjectsState, GridVisualState } from '../components/grid/builder/types'
 
@@ -366,17 +368,20 @@ const DeferredNumberInput = memo(function DeferredNumberInput({
         if (e.key === 'Enter' || e.key === 'Tab') {
           commit(local)
         }
-        // Shift+Arrow: immediate step commit for live preview
+        // Shift+Arrow: immediate step commit for live preview.
+        // Step size: use the `step` prop if provided, otherwise 10 for integers or 0.1 for decimals.
         if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
           e.preventDefault()
           const current = parseFloat(local)
           const safe = Number.isFinite(current) ? current : committedRef.current
-          const next = safe + (e.key === 'ArrowUp' ? 10 : -10)
+          const stepSize = rest.step != null ? Number(rest.step) * 10 : 10
+          const next = safe + (e.key === 'ArrowUp' ? stepSize : -stepSize)
           const clamped = rest.min != null ? Math.max(Number(rest.min), next) : next
           const clampedFinal = rest.max != null ? Math.min(Number(rest.max), clamped) : clamped
-          setLocal(String(clampedFinal))
-          committedRef.current = clampedFinal
-          ;(onStepCommit ?? onCommit)(clampedFinal)
+          const rounded = Math.round(clampedFinal / stepSize * 1e10) / 1e10
+          setLocal(String(rounded))
+          committedRef.current = rounded
+          ;(onStepCommit ?? onCommit)(rounded)
           return
         }
         onKeyDown?.(e)
@@ -533,6 +538,11 @@ const LayerItem = memo(function LayerItem({
 export function GridCanvasBuilder() {
   const [projectsState, setProjectsState] = useState<GridProjectsState>(loadGridProjectsState)
   const projectsStateRef = useRef<GridProjectsState>(projectsState)
+
+  useConvexGridSync(projectsState, (loaded) => {
+    setProjectsState(loaded)
+    projectsStateRef.current = loaded
+  })
   const activeProject = useMemo(
     () =>
       projectsState.projects.find(
@@ -540,7 +550,11 @@ export function GridCanvasBuilder() {
       ) ?? projectsState.projects[0],
     [projectsState],
   )
-  const pkg = activeProject.pkg
+  const [deviceMode, setDeviceMode] = useState<'desktop' | 'mobile'>('desktop')
+  const deviceModeRef = useRef<'desktop' | 'mobile'>('desktop')
+  const pkg = deviceMode === 'desktop'
+    ? activeProject.pkg
+    : (activeProject.mobilePkg ?? activeProject.pkg)
   const [selectedLayerId, setSelectedLayerId] = useState<string>(pkg.layers[0]?.id ?? '')
   // Per-layer preview state: each layer independently shows its own state in the canvas.
   // editStateKey is derived from the selected layer's entry — used by the editor panel.
@@ -548,7 +562,7 @@ export function GridCanvasBuilder() {
   const editStateKey: GridVisualState = layerEditStates[selectedLayerId] ?? 'default'
   const [gridViewState, setGridViewState] = useState<'open' | 'closed'>('open')
   const [rulersEnabled, setRulersEnabled] = useState(true)
-  const [preserveSvgCoordinates] = useState<boolean>(true)
+  const preserveSvgCoordinates = true
   const [viewportWidth, setViewportWidth] = useState<number>(
     typeof window !== 'undefined' ? window.innerWidth : 1440,
   )
@@ -678,6 +692,7 @@ export function GridCanvasBuilder() {
 
   // Keep hot-path refs in sync on every render (no useEffect overhead)
   projectsStateRef.current = projectsState
+  deviceModeRef.current = deviceMode
   previewScaleRef.current = previewScale
   editStateKeyRef.current = editStateKey
   layerEditStatesRef.current = layerEditStates
@@ -746,9 +761,14 @@ export function GridCanvasBuilder() {
           undoPendingTimerRef.current = null
         }, 220)
       }
+      const mode = deviceModeRef.current
       const nextProjects = currentState.projects.map((project) => {
         if (project.id !== currentState.activeProjectId) return project
-        const nextPkg = updater(project.pkg)
+        const currentPkg = mode === 'desktop' ? project.pkg : (project.mobilePkg ?? project.pkg)
+        const nextPkg = updater(currentPkg)
+        if (mode === 'mobile') {
+          return { ...project, name: nextPkg.meta.name || project.name, mobilePkg: nextPkg }
+        }
         return { ...project, name: nextPkg.meta.name || project.name, pkg: nextPkg }
       })
       const next = { ...currentState, projects: nextProjects }
@@ -788,7 +808,22 @@ export function GridCanvasBuilder() {
     }
     const next: GridProjectsState = { ...projectsState, activeProjectId: projectId }
     setProjectsState(next)
-    setSelectedLayerId(target.pkg.layers[0]?.id ?? '')
+    const targetPkg = deviceMode === 'desktop' ? target.pkg : (target.mobilePkg ?? target.pkg)
+    setSelectedLayerId(targetPkg.layers[0]?.id ?? '')
+  }
+
+  const switchDeviceMode = (mode: 'desktop' | 'mobile') => {
+    if (mode === deviceMode) return
+    if (mode === 'mobile' && !activeProject.mobilePkg) {
+      const cloned = structuredClone(activeProject.pkg)
+      setProjectsState((current) => ({
+        ...current,
+        projects: current.projects.map((p) =>
+          p.id === current.activeProjectId ? { ...p, mobilePkg: cloned } : p,
+        ),
+      }))
+    }
+    setDeviceMode(mode)
   }
 
   const pushActiveGridToRuntime = () => {
@@ -1012,8 +1047,7 @@ export function GridCanvasBuilder() {
       })
       return null
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [updateLayer])
 
   const updateLayerState = useCallback((
     layerId: string,
@@ -1170,8 +1204,10 @@ export function GridCanvasBuilder() {
       name: `${activeProject.name} Copy`,
       updatedAt: new Date().toISOString(),
       pkg: structuredClone(activeProject.pkg),
+      mobilePkg: activeProject.mobilePkg ? structuredClone(activeProject.mobilePkg) : undefined,
     }
     cloned.pkg.meta.name = cloned.name
+    if (cloned.mobilePkg) cloned.mobilePkg.meta.name = cloned.name
     const next: GridProjectsState = {
       ...projectsState,
       activeProjectId: cloned.id,
@@ -1519,6 +1555,19 @@ export function GridCanvasBuilder() {
       if (isTypingTarget) return
       event.preventDefault()
       pushActiveGridToRuntimeRef.current()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  // Escape closes any open modal
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setProjectSettingsOpen(false)
+      setCreateProjectOpen(false)
+      setLayerImportOpen(false)
+      setLayerDropActive(false)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -2051,6 +2100,30 @@ export function GridCanvasBuilder() {
           </div>
         </div>
         <div className="grid-builder__header-group grid-builder__header-group--right">
+          <div className="grid-builder__device-toggle" role="group" aria-label="Device mode">
+            <button
+              type="button"
+              className={`grid-builder__device-btn ${deviceMode === 'desktop' ? 'is-active' : ''}`}
+              onClick={() => switchDeviceMode('desktop')}
+              title="Desktop"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <rect x="2" y="3" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="1.8" fill="none"/>
+                <path d="M8 21h8M12 17v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+              </svg>
+            </button>
+            <button
+              type="button"
+              className={`grid-builder__device-btn ${deviceMode === 'mobile' ? 'is-active' : ''}`}
+              onClick={() => switchDeviceMode('mobile')}
+              title="Mobile"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <rect x="6" y="2" width="12" height="20" rx="2.5" stroke="currentColor" strokeWidth="1.8" fill="none"/>
+                <line x1="10" y1="19" x2="14" y2="19" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+              </svg>
+            </button>
+          </div>
           <div className="grid-builder__view-state-toggle" role="group" aria-label="Grid view state">
             <button
               type="button"
@@ -2074,6 +2147,7 @@ export function GridCanvasBuilder() {
           <button type="button" className="grid-builder-btn grid-builder-btn--primary" onClick={openCreateProjectPopup}>
             Create Grid
           </button>
+          <ProfileButton />
         </div>
       </header>
 
@@ -2177,12 +2251,12 @@ export function GridCanvasBuilder() {
             <div className="grid-builder-modal__body">
               <label className="grid-builder__label">
                 Grid name
-                <input
+                <DeferredTextInput
                   value={pkg.meta.name}
-                  onChange={(e) =>
+                  onCommit={(v) =>
                     apply((current) => ({
                       ...current,
-                      meta: { ...current.meta, name: e.target.value },
+                      meta: { ...current.meta, name: v },
                     }))
                   }
                   placeholder="Enter grid name"
@@ -2476,18 +2550,26 @@ export function GridCanvasBuilder() {
           {rulersEnabled ? (
             <>
               <div className="grid-builder__ruler grid-builder__ruler--top" aria-hidden>
-                {horizontalRulerMarks.map((_, i) => (
-                  <span key={`rx-${i}`} style={{ left: i * rulerStepPx }}>
-                    {i * rulerStepPx}
-                  </span>
-                ))}
+                {horizontalRulerMarks.map((_, i) => {
+                  const screenX = i * rulerStepPx
+                  const canvasX = Math.round((screenX - previewPan.x) / previewScale)
+                  return (
+                    <span key={`rx-${i}`} style={{ left: screenX }}>
+                      {canvasX}
+                    </span>
+                  )
+                })}
               </div>
               <div className="grid-builder__ruler grid-builder__ruler--left" aria-hidden>
-                {verticalRulerMarks.map((_, i) => (
-                  <span key={`ry-${i}`} style={{ top: i * rulerStepPx }}>
-                    {i * rulerStepPx}
-                  </span>
-                ))}
+                {verticalRulerMarks.map((_, i) => {
+                  const screenY = i * rulerStepPx
+                  const canvasY = Math.round((screenY - previewPan.y) / previewScale)
+                  return (
+                    <span key={`ry-${i}`} style={{ top: screenY }}>
+                      {canvasY}
+                    </span>
+                  )
+                })}
               </div>
             </>
           ) : null}

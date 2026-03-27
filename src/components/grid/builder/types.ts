@@ -104,6 +104,7 @@ export interface GridProject {
   name: string
   updatedAt: string
   pkg: GridPackage
+  mobilePkg?: GridPackage
 }
 
 export interface GridProjectsState {

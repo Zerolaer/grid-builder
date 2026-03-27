@@ -260,7 +260,7 @@ export function BettingGrid() {
             skin: 'default',
           }
         }),
-    [gridPackage.layers, globalGridState],
+    [gridPackage.layers],
   )
   const renderLayers = useMemo(
     () =>
