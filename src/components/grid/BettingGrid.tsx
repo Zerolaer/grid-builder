@@ -196,9 +196,20 @@ function layerAnimationStyle(
 }
 
 export function BettingGrid() {
+  const detectMobileRuntime = (): boolean => {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') return false
+    const ua = window.navigator.userAgent ?? ''
+    const uaDataMobile = (window.navigator as Navigator & { userAgentData?: { mobile?: boolean } }).userAgentData?.mobile
+    if (uaDataMobile === true) return true
+    if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua)) return true
+    const platform = window.navigator.platform ?? ''
+    const maxTouchPoints = window.navigator.maxTouchPoints ?? 0
+    // iPadOS may report itself as Mac.
+    return platform === 'MacIntel' && maxTouchPoints > 1
+  }
+
   const detectViewportMode = (): 'desktop' | 'mobile' => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'desktop'
-    return window.matchMedia('(max-width: 600px)').matches ? 'mobile' : 'desktop'
+    return detectMobileRuntime() ? 'mobile' : 'desktop'
   }
 
   const { state } = useGame()
@@ -327,12 +338,10 @@ export function BettingGrid() {
   }, [runtimeDeviceMode])
 
   useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
-    const media = window.matchMedia('(max-width: 600px)')
-    const onViewportModeChange = () => {
-      setRuntimeDeviceMode(detectViewportMode())
-    }
-    media.addEventListener('change', onViewportModeChange)
+    if (typeof window === 'undefined') return
+    const onViewportModeChange = () => setRuntimeDeviceMode(detectViewportMode())
+    window.addEventListener('resize', onViewportModeChange)
+    window.addEventListener('orientationchange', onViewportModeChange)
     const onRuntimeViewportModeChange = (event: Event) => {
       const custom = event as CustomEvent<{ mobile?: boolean }>
       const forcedMobile = custom.detail?.mobile
@@ -344,7 +353,8 @@ export function BettingGrid() {
     }
     window.addEventListener('iki-runtime:viewport-mode-changed', onRuntimeViewportModeChange as EventListener)
     return () => {
-      media.removeEventListener('change', onViewportModeChange)
+      window.removeEventListener('resize', onViewportModeChange)
+      window.removeEventListener('orientationchange', onViewportModeChange)
       window.removeEventListener(
         'iki-runtime:viewport-mode-changed',
         onRuntimeViewportModeChange as EventListener,

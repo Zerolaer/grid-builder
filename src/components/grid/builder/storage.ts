@@ -196,6 +196,17 @@ function broadcastGridPackage(detail: {
 
 type RuntimeDeviceMode = 'desktop' | 'mobile'
 
+function detectMobileRuntime(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false
+  const ua = window.navigator.userAgent ?? ''
+  const uaDataMobile = (window.navigator as Navigator & { userAgentData?: { mobile?: boolean } }).userAgentData?.mobile
+  if (uaDataMobile === true) return true
+  if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua)) return true
+  const platform = window.navigator.platform ?? ''
+  const maxTouchPoints = window.navigator.maxTouchPoints ?? 0
+  return platform === 'MacIntel' && maxTouchPoints > 1
+}
+
 type RuntimePackagesSnapshot = {
   version: 1
   updatedAt: string
@@ -204,11 +215,7 @@ type RuntimePackagesSnapshot = {
 }
 
 function detectRuntimeDeviceMode(): RuntimeDeviceMode {
-  if (typeof window === 'undefined') return 'desktop'
-  if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 600px)').matches) {
-    return 'mobile'
-  }
-  return 'desktop'
+  return detectMobileRuntime() ? 'mobile' : 'desktop'
 }
 
 export function selectProjectPackage(project: GridProject | undefined, mode: RuntimeDeviceMode): GridPackage | null {
