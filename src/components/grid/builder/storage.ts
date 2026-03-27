@@ -213,15 +213,10 @@ function detectRuntimeDeviceMode(): RuntimeDeviceMode {
 
 export function selectProjectPackage(project: GridProject | undefined, mode: RuntimeDeviceMode): GridPackage | null {
   if (!project) return null
-  // Runtime safety: if mobile package exists but is effectively empty/broken,
-  // fallback to desktop package so the game never renders a shifted/blank grid.
-  const hasRenderableMobilePkg =
-    Boolean(project.mobilePkg) &&
-    Array.isArray(project.mobilePkg?.layers) &&
-    project.mobilePkg.layers.length > 0
   const pkg = mode === 'mobile'
-    ? (hasRenderableMobilePkg ? project.mobilePkg! : project.pkg)
+    ? (project.mobilePkg ?? null)
     : project.pkg
+  if (!pkg) return null
   return normalizeGridPackage(pkg)
 }
 
