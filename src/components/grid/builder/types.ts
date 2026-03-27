@@ -99,10 +99,19 @@ export interface GridPackage {
       height: number
     }
     runtimeAtlas?: {
-      src: string
-      width: number
-      height: number
       updatedAt: string
+      states: Partial<
+        Record<
+          'open' | 'closed',
+          {
+            src: string
+            width: number
+            height: number
+            originX: number
+            originY: number
+          }
+        >
+      >
     }
   }
   components: GridComponent[]

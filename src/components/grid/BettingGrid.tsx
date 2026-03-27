@@ -530,7 +530,10 @@ export function BettingGrid() {
   const runtimeWidthStyle = `${runtimeWidthPx}px`
   const runtimeClipPath = 'none'
   const isMobileRuntime = runtimeDeviceMode === 'mobile'
-  const publishedMobileAtlasSrc = gridPackage.global?.runtimeAtlas?.src ?? null
+  const publishedMobileAtlasSrc =
+    gridPackage.global?.runtimeAtlas?.states?.[globalGridState]?.src
+    ?? gridPackage.global?.runtimeAtlas?.states?.open?.src
+    ?? null
   // Mobile runtime renders a prebuilt atlas generated during builder publish.
   const useMobileAtlasRendering = isMobileRuntime && Boolean(publishedMobileAtlasSrc)
 

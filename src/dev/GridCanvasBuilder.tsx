@@ -899,8 +899,8 @@ export function GridCanvasBuilder() {
       saveGridProjectsStateNow(projectsState)
       if (shouldPublishToRuntime) {
         const active = projectsState.projects.find((p) => p.id === projectsState.activeProjectId)
-        const desktopPkg = await buildRuntimeAtlasForPackage(selectProjectPackage(active, 'desktop'))
-        const mobilePkg = await buildRuntimeAtlasForPackage(selectProjectPackage(active, 'mobile'))
+        const desktopPkg = await buildRuntimeAtlasForPackage(selectProjectPackage(active, 'desktop'), 4, 8192)
+        const mobilePkg = await buildRuntimeAtlasForPackage(selectProjectPackage(active, 'mobile'), 7, 8192)
         publishRuntimePackages(desktopPkg, mobilePkg, deviceModeRef.current)
         lastRuntimePublishFingerprintRef.current = runtimeFingerprint
         await Promise.all([

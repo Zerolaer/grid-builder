@@ -214,23 +214,62 @@ type RuntimePackagesSnapshot = {
   mobilePkg: GridPackage | null
 }
 
-function pickLayerSourceForAtlas(layer: GridPackage['layers'][number]): string {
-  return layer.stateSvgs?.default ?? layer.src
+function pickLayerSourceForAtlas(pkg: GridPackage, layer: GridPackage['layers'][number]): string {
+  const stateSvg = layer.stateSvgs?.default
+  if (stateSvg) return stateSvg
+  if (layer.componentId && layer.variantId) {
+    const component = pkg.components.find((item) => item.id === layer.componentId)
+    const variant = component?.variants.find((item) => item.id === layer.variantId)
+    if (variant?.src) return variant.src
+  }
+  return layer.src
+}
+
+function resolveAtlasBounds(pkg: GridPackage): { originX: number; originY: number; width: number; height: number } {
+  const frameWidth = pkg.frame?.width > 0 ? pkg.frame.width : 1
+  const frameHeight = pkg.frame?.height > 0 ? pkg.frame.height : 1
+  const clipRect = pkg.global?.clipRect ?? { x: 0, y: 0, width: frameWidth, height: frameHeight }
+  let minX = Number.isFinite(clipRect.x) ? clipRect.x : 0
+  let minY = Number.isFinite(clipRect.y) ? clipRect.y : 0
+  let maxX = minX + (Number.isFinite(clipRect.width) ? clipRect.width : frameWidth)
+  let maxY = minY + (Number.isFinite(clipRect.height) ? clipRect.height : frameHeight)
+  for (const layer of pkg.layers) {
+    const rects = [
+      { x: layer.x, y: layer.y, width: layer.width, height: layer.height },
+      ...(layer.stateRects ? Object.values(layer.stateRects) : []),
+    ]
+    for (const rect of rects) {
+      if (!rect) continue
+      const x = Number.isFinite(rect.x) ? rect.x : 0
+      const y = Number.isFinite(rect.y) ? rect.y : 0
+      const w = Number.isFinite(rect.width) ? rect.width : 0
+      const h = Number.isFinite(rect.height) ? rect.height : 0
+      minX = Math.min(minX, x)
+      minY = Math.min(minY, y)
+      maxX = Math.max(maxX, x + w)
+      maxY = Math.max(maxY, y + h)
+    }
+  }
+  return {
+    originX: minX,
+    originY: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+  }
 }
 
 export async function buildRuntimeAtlasForPackage(
   pkg: GridPackage | null,
-  qualityScale = 3,
-  maxTextureWidth = 4096,
+  qualityScale = 6,
+  maxTextureWidth = 8192,
 ): Promise<GridPackage | null> {
   if (!pkg) return null
   if (typeof window === 'undefined') return pkg
-  const frameWidth = pkg.frame?.width > 0 ? pkg.frame.width : 1
-  const frameHeight = pkg.frame?.height > 0 ? pkg.frame.height : 1
-  const targetWidth = Math.max(1, Math.min(maxTextureWidth, Math.round(frameWidth * qualityScale)))
-  const targetHeight = Math.max(1, Math.round((targetWidth / frameWidth) * frameHeight))
+  const bounds = resolveAtlasBounds(pkg)
+  const targetWidth = Math.max(1, Math.min(maxTextureWidth, Math.round(bounds.width * qualityScale)))
+  const targetHeight = Math.max(1, Math.round((targetWidth / bounds.width) * bounds.height))
   const layers = pkg.layers.slice().sort((a, b) => a.zIndex - b.zIndex)
-  const uniqueSources = Array.from(new Set(layers.map((layer) => pickLayerSourceForAtlas(layer))))
+  const uniqueSources = Array.from(new Set(layers.map((layer) => pickLayerSourceForAtlas(pkg, layer))))
   const loadImage = (src: string) =>
     new Promise<HTMLImageElement>((resolve, reject) => {
       const img = new Image()
@@ -251,32 +290,53 @@ export async function buildRuntimeAtlasForPackage(
   ctx.clearRect(0, 0, targetWidth, targetHeight)
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = 'high'
-  const scaleX = targetWidth / frameWidth
-  const scaleY = targetHeight / frameHeight
+  const scaleX = targetWidth / bounds.width
+  const scaleY = targetHeight / bounds.height
 
-  for (const layer of layers) {
-    const style = layer.stateStyles?.default ?? { visible: true, opacity: 1 }
-    if (!style.visible || style.opacity <= 0) continue
-    const src = pickLayerSourceForAtlas(layer)
-    const image = imageMap.get(src)
-    if (!image) continue
-    ctx.globalAlpha = Math.max(0, Math.min(1, style.opacity))
-    ctx.drawImage(
-      image,
-      layer.x * scaleX,
-      layer.y * scaleY,
-      layer.width * scaleX,
-      layer.height * scaleY,
-    )
+  const renderAtlasState = (closed: boolean): string => {
+    ctx.clearRect(0, 0, targetWidth, targetHeight)
+    for (const layer of layers) {
+      const stateStyle = layer.stateStyles?.default ?? { visible: true, opacity: 1 }
+      const stateVisible = stateStyle.visible
+      const globalVisible = closed
+        ? (layer.globalVisibility?.closed ?? true)
+        : (layer.globalVisibility?.open ?? true)
+      if (!stateVisible || !globalVisible || stateStyle.opacity <= 0) continue
+      const src = pickLayerSourceForAtlas(pkg, layer)
+      const image = imageMap.get(src)
+      if (!image) continue
+      ctx.globalAlpha = Math.max(0, Math.min(1, stateStyle.opacity))
+      ctx.drawImage(
+        image,
+        (layer.x - bounds.originX) * scaleX,
+        (layer.y - bounds.originY) * scaleY,
+        layer.width * scaleX,
+        layer.height * scaleY,
+      )
+    }
+    ctx.globalAlpha = 1
+    return canvas.toDataURL('image/png')
   }
-  ctx.globalAlpha = 1
-  const atlasSrc = canvas.toDataURL('image/png')
+
   const nextPkg = structuredClone(pkg)
   nextPkg.global.runtimeAtlas = {
-    src: atlasSrc,
-    width: targetWidth,
-    height: targetHeight,
     updatedAt: new Date().toISOString(),
+    states: {
+      open: {
+        src: renderAtlasState(false),
+        width: targetWidth,
+        height: targetHeight,
+        originX: bounds.originX,
+        originY: bounds.originY,
+      },
+      closed: {
+        src: renderAtlasState(true),
+        width: targetWidth,
+        height: targetHeight,
+        originX: bounds.originX,
+        originY: bounds.originY,
+      },
+    },
   }
   return nextPkg
 }
