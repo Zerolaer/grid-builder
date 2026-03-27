@@ -1,5 +1,6 @@
-/** Round phases; transition flow will be driven by server/WebSocket later. */
-export type GamePhase = 'betting' | 'bets_closed' | 'rolling' | 'result'
+/** Round phases; grid-facing flow is open -> closed. */
+export type GamePhase = 'betting' | 'bets_closed'
+export type GridViewState = 'auto' | 'open' | 'closed'
 
 export type ChipValue = 1 | 2 | 5 | 10 | 25 | 50 | 100 | 250
 
@@ -25,6 +26,7 @@ export interface PlacedBet {
 
 export interface GameState {
   phase: GamePhase
+  gridViewState: GridViewState
   /** Seconds until bet intake closes (mock for now; server-driven later). */
   countdownSec: number
   balance: number

@@ -11,6 +11,7 @@ export type GridLayerAnimationPreset =
   | 'from-left'
   | 'from-top'
 export type GridLayerAnimationEasing = 'ease' | 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out'
+export type GridLayerAnimationTrigger = 'while-active' | 'on-transition'
 
 export interface GridLayerStateStyle {
   visible: boolean
@@ -19,6 +20,9 @@ export interface GridLayerStateStyle {
 
 export interface GridLayerAnimation {
   preset: GridLayerAnimationPreset
+  trigger: GridLayerAnimationTrigger
+  fromState: GridVisualState | 'any'
+  toState: GridVisualState | 'any'
   durationMs: number
   delayMs: number
   easing: GridLayerAnimationEasing
@@ -30,6 +34,8 @@ export interface GridLayer {
   name: string
   locked?: boolean
   src: string
+  originalWidth: number
+  originalHeight: number
   x: number
   y: number
   width: number

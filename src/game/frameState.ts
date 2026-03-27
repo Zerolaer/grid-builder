@@ -5,15 +5,13 @@ import type { GameState } from './types'
  * - open: betting is open (green)
  * - closing: last seconds before close (orange)
  * - ended: betting is closed (red)
- * - active: active game state, roll/result (gold)
  */
-export type FrameVisualState = 'open' | 'closing' | 'ended' | 'active'
+export type FrameVisualState = 'open' | 'closing' | 'ended'
 
 /** Number of seconds for the "orange" pre-close phase. */
 export const FRAME_CLOSING_LAST_SEC = 3
 
 export function getFrameVisualState(state: GameState): FrameVisualState {
-  if (state.phase === 'rolling' || state.phase === 'result') return 'active'
   if (state.phase === 'bets_closed') return 'ended'
   if (state.phase === 'betting') {
     if (

@@ -17,6 +17,14 @@ const ICON_AUTOPLAY_SRC =
   'https://www.figma.com/api/mcp/asset/75f4f83a-1eaf-4960-b6cc-8d6635bd1611'
 const ICON_LOBBY_SRC =
   'https://www.figma.com/api/mcp/asset/e9974cb2-06c6-4aed-956d-00e0e158bf28'
+const MOBILE_ICON_CHAT_SRC =
+  'https://www.figma.com/api/mcp/asset/cbf28923-adf3-48ee-8b41-3527bacbab85'
+const MOBILE_ICON_BACK_SRC =
+  'https://www.figma.com/api/mcp/asset/29577e30-03e0-4deb-9580-308a3aab3699'
+const MOBILE_ICON_DOUBLE_SRC =
+  'https://www.figma.com/api/mcp/asset/8da40ee1-88aa-4ff3-b5a8-e654f685461c'
+const MOBILE_ICON_MENU_SRC =
+  'https://www.figma.com/api/mcp/asset/6b49b043-a606-4795-93ff-55d01e813cd7'
 
 function formatFigmaMoney(value: number): string {
   return `$ ${value.toLocaleString(undefined, {
@@ -93,6 +101,27 @@ function UtilityIcon({
   )
 }
 
+function MobileFooterIcon({
+  label,
+  src,
+  kind,
+}: {
+  label: string
+  src: string
+  kind: 'chat' | 'back' | 'double' | 'menu'
+}) {
+  return (
+    <button
+      type="button"
+      className={`bottom-bar-mobile__icon-btn bottom-bar-mobile__icon-btn--${kind}`}
+      disabled
+      aria-label={`${label} placeholder`}
+    >
+      <img src={src} alt="" />
+    </button>
+  )
+}
+
 export function BottomBar() {
   const { state, dispatch } = useGame()
   const open = useBettingOpen()
@@ -100,7 +129,7 @@ export function BottomBar() {
 
   return (
     <footer className="bottom-bar bottom-bar-figma">
-      <div className="bottom-bar-figma__money">
+      <div className="bottom-bar-figma__desktop bottom-bar-figma__money">
         <div className="bottom-bar-figma__money-col">
           <span className="bottom-bar-figma__caption">BALANCE:</span>
           <span className="bottom-bar-figma__amount">{formatFigmaMoney(state.balance)}</span>
@@ -114,7 +143,7 @@ export function BottomBar() {
         </div>
       </div>
 
-      <div className="bottom-bar-figma__center">
+      <div className="bottom-bar-figma__desktop bottom-bar-figma__center">
         <UtilityIcon
           label="Undo"
           iconSrc={ICON_UNDO_SRC}
@@ -157,7 +186,7 @@ export function BottomBar() {
         />
       </div>
 
-      <div className="bottom-bar-figma__actions">
+      <div className="bottom-bar-figma__desktop bottom-bar-figma__actions">
         <button type="button" className="bottom-bar-figma__pill" disabled>
           <img src={ICON_AUTOPLAY_SRC} alt="" aria-hidden />
           <span>AUTOPLAY</span>
@@ -167,6 +196,20 @@ export function BottomBar() {
           <img src={ICON_LOBBY_SRC} alt="" aria-hidden />
           <span>LOBBY</span>
         </button>
+      </div>
+
+      <div className="bottom-bar-mobile">
+        <MobileFooterIcon label="Chat" src={MOBILE_ICON_CHAT_SRC} kind="chat" />
+        <MobileFooterIcon label="Undo" src={MOBILE_ICON_BACK_SRC} kind="back" />
+        <button type="button" className="bottom-bar-mobile__chips" disabled aria-label="Chips placeholder">
+          <span className="bottom-bar-mobile__chip-stack" aria-hidden>
+            <img src={CHIP_LOCAL_SRC['10']} alt="" />
+            <img src={CHIP_LOCAL_SRC['2']} alt="" />
+            <img src={CHIP_LOCAL_SRC['5']} alt="" />
+          </span>
+        </button>
+        <MobileFooterIcon label="Double" src={MOBILE_ICON_DOUBLE_SRC} kind="double" />
+        <MobileFooterIcon label="Menu" src={MOBILE_ICON_MENU_SRC} kind="menu" />
       </div>
     </footer>
   )

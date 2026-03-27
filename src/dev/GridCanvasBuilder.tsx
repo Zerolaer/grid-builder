@@ -1,7 +1,7 @@
 import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { createDefaultGridPackage, createEmptyGridPackage } from '../components/grid/builder/defaultPackage'
-import { loadGridProjectsState, publishGridProjectsState, saveGridProjectsState, touchInMemoryState } from '../components/grid/builder/storage'
+import { loadGridProjectsState, publishGridProjectsState, saveGridProjectsState, saveGridProjectsStateNow, touchInMemoryState } from '../components/grid/builder/storage'
 import { useConvexGridSync } from '../hooks/useConvexGridSync'
 import { ProfileButton } from '../auth/ProfileButton'
 import type { BetZoneId } from '../game/types'
@@ -28,6 +28,15 @@ function fallbackZoneId(layerId: string): BetZoneId {
 
 // Stable reference — prevents useEffect re-run every render when no layer is selected
 const DEFAULT_ENABLED_STATES: GridVisualState[] = ['default']
+
+function getRuntimePackageFingerprint(state: GridProjectsState, mode: 'desktop' | 'mobile'): string {
+  const active =
+    state.projects.find((project) => project.id === state.activeProjectId) ??
+    state.projects[0]
+  if (!active) return `${mode}:none`
+  const activePkg = mode === 'desktop' ? active.pkg : (active.mobilePkg ?? active.pkg)
+  return `${mode}:${active.id}:${JSON.stringify(activePkg)}`
+}
 
 function fitRectIntoFrame(
   rect: { x: number; y: number; width: number; height: number },
@@ -242,6 +251,17 @@ function computeInteractionRect(
   }
   const w = Math.max(minSize, startW - dx); const h = Math.max(minSize, startH - dy)
   return { x: startX + (startW - w), y: startY + (startH - h), width: w, height: h }
+}
+
+function safeRect(
+  rect: { x?: number; y?: number; width?: number; height?: number } | undefined,
+  fallback: { x: number; y: number; width: number; height: number },
+): { x: number; y: number; width: number; height: number } {
+  const x = Number.isFinite(rect?.x) ? Number(rect?.x) : fallback.x
+  const y = Number.isFinite(rect?.y) ? Number(rect?.y) : fallback.y
+  const width = Number.isFinite(rect?.width) && Number(rect?.width) > 0 ? Number(rect?.width) : fallback.width
+  const height = Number.isFinite(rect?.height) && Number(rect?.height) > 0 ? Number(rect?.height) : fallback.height
+  return { x, y, width, height }
 }
 
 
@@ -538,11 +558,13 @@ const LayerItem = memo(function LayerItem({
 export function GridCanvasBuilder() {
   const [projectsState, setProjectsState] = useState<GridProjectsState>(loadGridProjectsState)
   const projectsStateRef = useRef<GridProjectsState>(projectsState)
+  const [updateRuntimeStatus, setUpdateRuntimeStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle')
+  const lastRuntimePublishFingerprintRef = useRef<string | null>(null)
 
-  useConvexGridSync(projectsState, (loaded) => {
+  const { status: cloudSyncStatus, saveNow: saveToCloudNow } = useConvexGridSync(projectsState, (loaded) => {
     setProjectsState(loaded)
     projectsStateRef.current = loaded
-  })
+  }, { autoSync: false })
   const activeProject = useMemo(
     () =>
       projectsState.projects.find(
@@ -641,7 +663,7 @@ export function GridCanvasBuilder() {
   const selectedLayerRef = useRef<import('../components/grid/builder/types').GridLayer | null>(null)
   const selectedRectRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null)
   const removeLayerRef = useRef<(id: string) => void>(() => {})
-  const pushActiveGridToRuntimeRef = useRef<() => void>(() => {})
+  const pushActiveGridToRuntimeRef = useRef<() => Promise<void> | void>(() => {})
   // Stable handler refs — registered once, always call the latest closure
   const onPasteHandlerRef = useRef<(event: ClipboardEvent) => void>(() => {})
   const onArrowKeyDownHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {})
@@ -680,6 +702,9 @@ export function GridCanvasBuilder() {
   const editStateStyle = selectedLayer?.stateStyles[editStateKey]
   const selectedAnimation = selectedLayer?.animation ?? {
     preset: 'none' as const,
+    trigger: 'while-active' as const,
+    fromState: 'any' as const,
+    toState: 'any' as const,
     durationMs: 220,
     delayMs: 0,
     easing: 'ease-out' as const,
@@ -740,42 +765,62 @@ export function GridCanvasBuilder() {
 
   // apply is stable (useCallback with empty deps) — only uses refs and setProjectsState
   const apply = useCallback((updater: (current: GridPackage) => GridPackage) => {
-    setProjectsState((currentState) => {
-      if (!isUndoingRef.current && !isRedoingRef.current) {
-        // New user action clears the redo stack
-        redoStackRef.current = []
-        if (!undoPendingBaseRef.current) {
-          undoPendingBaseRef.current = currentState
-        }
-        if (undoPendingTimerRef.current) {
-          clearTimeout(undoPendingTimerRef.current)
-        }
-        undoPendingTimerRef.current = setTimeout(() => {
-          if (undoPendingBaseRef.current) {
-            undoStackRef.current.push(undoPendingBaseRef.current)
-            if (undoStackRef.current.length > 100) {
-              undoStackRef.current.shift()
-            }
-            undoPendingBaseRef.current = null
+    startTransition(() => {
+      setProjectsState((currentState) => {
+        if (!isUndoingRef.current && !isRedoingRef.current) {
+          // New user action clears the redo stack
+          redoStackRef.current = []
+          if (!undoPendingBaseRef.current) {
+            undoPendingBaseRef.current = currentState
           }
-          undoPendingTimerRef.current = null
-        }, 220)
-      }
-      const mode = deviceModeRef.current
-      const nextProjects = currentState.projects.map((project) => {
-        if (project.id !== currentState.activeProjectId) return project
-        const currentPkg = mode === 'desktop' ? project.pkg : (project.mobilePkg ?? project.pkg)
-        const nextPkg = updater(currentPkg)
-        if (mode === 'mobile') {
-          return { ...project, name: nextPkg.meta.name || project.name, mobilePkg: nextPkg }
+          if (undoPendingTimerRef.current) {
+            clearTimeout(undoPendingTimerRef.current)
+          }
+          undoPendingTimerRef.current = setTimeout(() => {
+            if (undoPendingBaseRef.current) {
+              undoStackRef.current.push(undoPendingBaseRef.current)
+              if (undoStackRef.current.length > 100) {
+                undoStackRef.current.shift()
+              }
+              undoPendingBaseRef.current = null
+            }
+            undoPendingTimerRef.current = null
+          }, 220)
         }
-        return { ...project, name: nextPkg.meta.name || project.name, pkg: nextPkg }
+        const mode = deviceModeRef.current
+        const nowIso = new Date().toISOString()
+        const nextProjects = currentState.projects.map((project) => {
+          if (project.id !== currentState.activeProjectId) return project
+          const currentPkg = mode === 'desktop' ? project.pkg : (project.mobilePkg ?? project.pkg)
+          const nextPkg = updater(currentPkg)
+          const nextPkgWithMeta = {
+            ...nextPkg,
+            meta: {
+              ...nextPkg.meta,
+              updatedAt: nowIso,
+            },
+          }
+          if (mode === 'mobile') {
+            return {
+              ...project,
+              name: nextPkgWithMeta.meta.name || project.name,
+              updatedAt: nowIso,
+              mobilePkg: nextPkgWithMeta,
+            }
+          }
+          return {
+            ...project,
+            name: nextPkgWithMeta.meta.name || project.name,
+            updatedAt: nowIso,
+            pkg: nextPkgWithMeta,
+          }
+        })
+        const next = { ...currentState, projects: nextProjects }
+        // Synchronously keep in-memory state current so beforeunload always has
+        // the latest version even if the useEffect hasn't fired yet.
+        touchInMemoryState(next)
+        return next
       })
-      const next = { ...currentState, projects: nextProjects }
-      // Synchronously keep in-memory state current so beforeunload always has
-      // the latest version even if the useEffect hasn't fired yet.
-      touchInMemoryState(next)
-      return next
     })
   }, [])
 
@@ -815,20 +860,44 @@ export function GridCanvasBuilder() {
   const switchDeviceMode = (mode: 'desktop' | 'mobile') => {
     if (mode === deviceMode) return
     if (mode === 'mobile' && !activeProject.mobilePkg) {
-      const cloned = structuredClone(activeProject.pkg)
+      // Initialize mobile package from desktop to avoid blank/broken runtime
+      // when users switch to mobile for the first time.
+      const freshMobilePkg = structuredClone(activeProject.pkg)
+      freshMobilePkg.meta.name = activeProject.name
+      freshMobilePkg.meta.updatedAt = new Date().toISOString()
       setProjectsState((current) => ({
         ...current,
         projects: current.projects.map((p) =>
-          p.id === current.activeProjectId ? { ...p, mobilePkg: cloned } : p,
+          p.id === current.activeProjectId
+            ? { ...p, updatedAt: freshMobilePkg.meta.updatedAt, mobilePkg: freshMobilePkg }
+            : p,
         ),
       }))
+      setSelectedLayerId(freshMobilePkg.layers[0]?.id ?? '')
+    } else {
+      const targetPkg = mode === 'desktop' ? activeProject.pkg : (activeProject.mobilePkg ?? activeProject.pkg)
+      setSelectedLayerId(targetPkg.layers[0]?.id ?? '')
     }
     setDeviceMode(mode)
   }
 
-  const pushActiveGridToRuntime = () => {
-    saveGridProjectsState(projectsState)
-    publishGridProjectsState(projectsState)
+  const pushActiveGridToRuntime = async () => {
+    setUpdateRuntimeStatus('saving')
+    try {
+      const runtimeFingerprint = getRuntimePackageFingerprint(projectsState, deviceModeRef.current)
+      const shouldPublishToRuntime = runtimeFingerprint !== lastRuntimePublishFingerprintRef.current
+      // Explicit "Update Game" must persist immediately so refresh never restores stale mobile grid.
+      saveGridProjectsStateNow(projectsState)
+      if (shouldPublishToRuntime) {
+        publishGridProjectsState(projectsState, deviceModeRef.current)
+        lastRuntimePublishFingerprintRef.current = runtimeFingerprint
+      }
+      // Cloud save is awaited to guarantee cross-device availability after Update Game.
+      await saveToCloudNow()
+      setUpdateRuntimeStatus('success')
+    } catch {
+      setUpdateRuntimeStatus('error')
+    }
   }
   pushActiveGridToRuntimeRef.current = pushActiveGridToRuntime
 
@@ -858,6 +927,8 @@ export function GridCanvasBuilder() {
         locked: false,
         zoneId: uid('zone') as BetZoneId,
         src,
+        originalWidth: initialRect.width,
+        originalHeight: initialRect.height,
         x: initialRect.x,
         y: initialRect.y,
         width: initialRect.width,
@@ -873,6 +944,9 @@ export function GridCanvasBuilder() {
         },
         animation: {
           preset: 'none',
+          trigger: 'while-active',
+          fromState: 'any',
+          toState: 'any',
           durationMs: 220,
           delayMs: 0,
           easing: 'ease-out',
@@ -914,6 +988,8 @@ export function GridCanvasBuilder() {
       locked: false,
       zoneId: uid('zone') as BetZoneId,
       src: svgTextToDataUrl(svgText),
+      originalWidth: initialRect.width,
+      originalHeight: initialRect.height,
       x: initialRect.x,
       y: initialRect.y,
       width: initialRect.width,
@@ -929,6 +1005,9 @@ export function GridCanvasBuilder() {
       },
       animation: {
         preset: 'none',
+        trigger: 'while-active',
+        fromState: 'any',
+        toState: 'any',
         durationMs: 220,
         delayMs: 0,
         easing: 'ease-out',
@@ -1477,9 +1556,12 @@ export function GridCanvasBuilder() {
       const active =
         snapshot.projects.find((p) => p.id === snapshot.activeProjectId) ??
         snapshot.projects[0]
+      const activePkg = deviceModeRef.current === 'desktop'
+        ? active?.pkg
+        : (active?.mobilePkg ?? active?.pkg)
       setSelectedLayerId((prevId) => {
-        const stillExists = active?.pkg.layers.some((l) => l.id === prevId)
-        return stillExists ? prevId : (active?.pkg.layers[0]?.id ?? '')
+        const stillExists = activePkg?.layers.some((l) => l.id === prevId)
+        return stillExists ? prevId : (activePkg?.layers[0]?.id ?? '')
       })
       flagRef.current = false
     }
@@ -1554,7 +1636,7 @@ export function GridCanvasBuilder() {
           !!target.closest('[contenteditable="true"]'))
       if (isTypingTarget) return
       event.preventDefault()
-      pushActiveGridToRuntimeRef.current()
+      void pushActiveGridToRuntimeRef.current()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -1600,14 +1682,17 @@ export function GridCanvasBuilder() {
   const createLayerState = (layerId: string, state: GridVisualState) => {
     apply((current) => ({
       ...current,
-      layers: current.layers.map((layer) =>
-        layer.id === layerId
-          ? {
-              ...layer,
-              enabledStates: Array.from(new Set([...(layer.enabledStates ?? ['default']), state])),
-            }
-          : layer,
-      ),
+      layers: current.layers.map((layer) => {
+        if (layer.id !== layerId) return layer
+        const baseRect = { x: layer.x, y: layer.y, width: layer.width, height: layer.height }
+        const nextRects = { ...(layer.stateRects ?? {}) }
+        nextRects[state] = safeRect(nextRects[state], baseRect)
+        return {
+          ...layer,
+          enabledStates: Array.from(new Set([...(layer.enabledStates ?? ['default']), state])),
+          stateRects: nextRects,
+        }
+      }),
     }))
   }
 
@@ -1770,6 +1855,23 @@ export function GridCanvasBuilder() {
     setPreviewZoom((current) => Math.round(clampPreviewZoom(current + delta) * 100) / 100)
   }
 
+  // Native wheel listener with passive:false is required for ctrl/cmd zoom.
+  // React's delegated wheel listener may be passive in modern runtimes.
+  useEffect(() => {
+    const viewport = previewViewportRef.current
+    if (!viewport) return
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return
+      event.preventDefault()
+      const delta = event.deltaY > 0 ? -0.08 : 0.08
+      stepPreviewZoom(delta)
+    }
+    viewport.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      viewport.removeEventListener('wheel', onWheel)
+    }
+  }, [stepPreviewZoom])
+
   const onWindowSplitterMove = (event: PointerEvent) => {
     const interaction = splitterRef.current
     if (!interaction) return
@@ -1910,10 +2012,11 @@ export function GridCanvasBuilder() {
 
   const selectedRect = useMemo(() => {
     if (!selectedLayer) return null
+    const baseRect = { x: selectedLayer.x, y: selectedLayer.y, width: selectedLayer.width, height: selectedLayer.height }
     if (editStateKey !== 'default') {
-      return selectedLayer.stateRects?.[editStateKey] ?? { x: selectedLayer.x, y: selectedLayer.y, width: selectedLayer.width, height: selectedLayer.height }
+      return safeRect(selectedLayer.stateRects?.[editStateKey], baseRect)
     }
-    return { x: selectedLayer.x, y: selectedLayer.y, width: selectedLayer.width, height: selectedLayer.height }
+    return safeRect(baseRect, baseRect)
   }, [selectedLayer, editStateKey])
 
   const frameCenter = useMemo(() => ({
@@ -1937,9 +2040,14 @@ export function GridCanvasBuilder() {
 
   // Derived from selectedRect — no extra render on layer select
   const layerScaleDerived = useMemo(() => {
-    if (!selectedLayer || !selectedRect || selectedLayer.width <= 0) return 1
-    return Math.round((selectedRect.width / selectedLayer.width) * 1000) / 1000
-  }, [selectedLayer?.id, selectedRect?.width, selectedLayer?.width])
+    if (!selectedLayer || !selectedRect || selectedLayer.originalWidth <= 0) return 1
+    const ratio = selectedRect.width / selectedLayer.originalWidth
+    if (!Number.isFinite(ratio) || ratio <= 0) return 1
+    return Math.round(ratio * 1000) / 1000
+  }, [selectedLayer?.id, selectedRect?.width, selectedLayer?.originalWidth])
+  const layerScaleValue = Number.isFinite(layerScaleDerived) && layerScaleDerived > 0
+    ? layerScaleDerived
+    : 1
 
   // Sync hot-path refs — always current, so event handlers registered once never go stale
   selectedLayerRef.current = selectedLayer
@@ -1961,8 +2069,8 @@ export function GridCanvasBuilder() {
     const clamped = Math.max(0.05, Math.min(10, Number.isFinite(scale) ? scale : 1))
     const centerX = selectedRect.x + selectedRect.width / 2
     const centerY = selectedRect.y + selectedRect.height / 2
-    const nextWidth = selectedLayer.width * clamped
-    const nextHeight = selectedLayer.height * clamped
+    const nextWidth = selectedLayer.originalWidth * clamped
+    const nextHeight = selectedLayer.originalHeight * clamped
     applyLayerRect(selectedLayer.id, editStateKey, {
       x: centerX - nextWidth / 2,
       y: centerY - nextHeight / 2,
@@ -2136,13 +2244,26 @@ export function GridCanvasBuilder() {
               onClick={() => setGridViewState('closed')}
             >Closed</button>
           </div>
+          <div className={`grid-builder__cloud-sync grid-builder__cloud-sync--${cloudSyncStatus}`}>
+            {cloudSyncStatus === 'loading' && 'Cloud: Loading'}
+            {cloudSyncStatus === 'saving' && 'Cloud: Saving...'}
+            {cloudSyncStatus === 'saved' && 'Cloud: Saved'}
+            {cloudSyncStatus === 'error' && 'Cloud: Error'}
+          </div>
+          <div className={`grid-builder__cloud-sync grid-builder__cloud-sync--${updateRuntimeStatus === 'success' ? 'saved' : updateRuntimeStatus === 'error' ? 'error' : updateRuntimeStatus}`}>
+            {updateRuntimeStatus === 'saving' && 'Update Game: Sending...'}
+            {updateRuntimeStatus === 'success' && 'Update Game: Success'}
+            {updateRuntimeStatus === 'error' && 'Update Game: Failed'}
+            {updateRuntimeStatus === 'idle' && 'Update Game: Ready'}
+          </div>
           <button
             type="button"
             className="grid-builder-btn"
-            onClick={pushActiveGridToRuntime}
+            onClick={() => { void pushActiveGridToRuntime() }}
             title="Force sync grid to game (Cmd/Ctrl+S)"
+            disabled={updateRuntimeStatus === 'saving'}
           >
-            Update Game
+            {updateRuntimeStatus === 'saving' ? 'Updating...' : 'Update Game'}
           </button>
           <button type="button" className="grid-builder-btn grid-builder-btn--primary" onClick={openCreateProjectPopup}>
             Create Grid
@@ -2540,12 +2661,6 @@ export function GridCanvasBuilder() {
               if (!isMiddleButton && !isSpacePan) return
               beginPanInteraction(event)
             }}
-            onWheel={(event) => {
-              if (!event.ctrlKey && !event.metaKey) return
-              event.preventDefault()
-              const delta = event.deltaY > 0 ? -0.08 : 0.08
-              stepPreviewZoom(delta)
-            }}
           >
           {rulersEnabled ? (
             <>
@@ -2805,14 +2920,25 @@ export function GridCanvasBuilder() {
                 />
               </label>
               <label>Scale
-                <DeferredNumberInput
-                  min={0.05}
-                  max={10}
-                  step={0.01}
-                  value={layerScaleDerived}
-                  onCommit={(v) => applyLayerScaleByCenter(v)}
-                  onStepCommit={(v) => applyLayerScaleByCenter(Math.max(0.05, Math.min(10, v)))}
-                />
+                <div className="grid-builder__scale-control">
+                  <input
+                    type="range"
+                    min={0.05}
+                    max={10}
+                    step={0.01}
+                    value={layerScaleValue}
+                    onChange={(e) => applyLayerScaleByCenter(Number(e.target.value))}
+                    aria-label="Layer scale slider"
+                  />
+                  <DeferredNumberInput
+                    min={0.05}
+                    max={10}
+                    step={0.01}
+                    value={layerScaleValue}
+                    onCommit={(v) => applyLayerScaleByCenter(v)}
+                    onStepCommit={(v) => applyLayerScaleByCenter(Math.max(0.05, Math.min(10, v)))}
+                  />
+                </div>
               </label>
             </div>
             <div className="grid-builder__global-visibility">
@@ -3001,6 +3127,65 @@ export function GridCanvasBuilder() {
                   <option value="zoom-out">Zoom out</option>
                   <option value="from-left">Move from left</option>
                   <option value="from-top">Move from top</option>
+                </select>
+              </label>
+              <label>
+                Trigger
+                <select
+                  value={selectedAnimation.trigger}
+                  onChange={(e) =>
+                    updateLayer(selectedLayer.id, {
+                      animation: {
+                        ...selectedAnimation,
+                        trigger: e.target.value as typeof selectedAnimation.trigger,
+                      },
+                    })
+                  }
+                >
+                  <option value="while-active">While in target state</option>
+                  <option value="on-transition">Only on state transition</option>
+                </select>
+              </label>
+              <label>
+                From state
+                <select
+                  value={selectedAnimation.fromState}
+                  onChange={(e) =>
+                    updateLayer(selectedLayer.id, {
+                      animation: {
+                        ...selectedAnimation,
+                        fromState: e.target.value as typeof selectedAnimation.fromState,
+                      },
+                    })
+                  }
+                >
+                  <option value="any">Any</option>
+                  {STATES.map((state) => (
+                    <option key={`from-${state}`} value={state}>
+                      {state}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                To state
+                <select
+                  value={selectedAnimation.toState}
+                  onChange={(e) =>
+                    updateLayer(selectedLayer.id, {
+                      animation: {
+                        ...selectedAnimation,
+                        toState: e.target.value as typeof selectedAnimation.toState,
+                      },
+                    })
+                  }
+                >
+                  <option value="any">Any</option>
+                  {STATES.map((state) => (
+                    <option key={`to-${state}`} value={state}>
+                      {state}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label>

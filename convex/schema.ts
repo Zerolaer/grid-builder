@@ -7,8 +7,19 @@ export default defineSchema({
   gridProjects: defineTable({
     userId: v.id('users'),
     name: v.string(),
-    // LZ-string compressed JSON of GridProjectsState
+    // LZ-string compressed JSON of GridProjectsState or chunk marker.
     data: v.string(),
     updatedAt: v.string(),
   }).index('by_user', ['userId']),
+  gridProjectChunks: defineTable({
+    userId: v.id('users'),
+    uploadId: v.optional(v.string()),
+    chunkIndex: v.number(),
+    data: v.string(),
+    updatedAt: v.string(),
+  })
+    .index('by_user', ['userId'])
+    .index('by_user_chunk', ['userId', 'chunkIndex'])
+    .index('by_user_upload', ['userId', 'uploadId'])
+    .index('by_user_upload_chunk', ['userId', 'uploadId', 'chunkIndex']),
 })

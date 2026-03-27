@@ -7,6 +7,9 @@ export const GRID_PROJECTS_STORAGE_KEY = 'iki-builder:grid-projects:v1'
 export const GRID_PROJECTS_SESSION_STORAGE_KEY = 'iki-builder:grid-projects:session:v1'
 export const GRID_PACKAGE_SESSION_STORAGE_KEY = 'iki-builder:grid-package:session:v1'
 export const GRID_PROJECTS_WINDOW_NAME_KEY = 'iki-builder:grid-projects:window-name:v1'
+export const GRID_RUNTIME_PACKAGES_STORAGE_KEY = 'iki-builder:grid-runtime-packages:v1'
+export const GRID_RUNTIME_PACKAGES_SESSION_STORAGE_KEY = 'iki-builder:grid-runtime-packages:session:v1'
+export const GRID_RUNTIME_PACKAGES_WINDOW_NAME_KEY = 'iki-builder:grid-runtime-packages:window-name:v1'
 export const GRID_PACKAGE_EVENT = 'iki-builder:grid-package:updated'
 export const GRID_PACKAGE_BROADCAST_CHANNEL = 'iki-builder:grid-package:channel'
 let inMemoryProjectsState: GridProjectsState | null = null
@@ -14,28 +17,60 @@ const COMPRESSED_PREFIX = 'lz16:'
 let persistTimer: ReturnType<typeof setTimeout> | null = null
 let pendingPersistState: GridProjectsState | null = null
 let idlePersistHandle: number | null = null
+const IDLE_MIN_BUDGET_MS = 10
+
+function scheduleIdlePersist(state: GridProjectsState): void {
+  if (typeof window === 'undefined') return
+  if (typeof window.requestIdleCallback === 'function') {
+    idlePersistHandle = window.requestIdleCallback((deadline) => {
+      idlePersistHandle = null
+      // Avoid heavy serialization while user is actively interacting.
+      // Requeue until we get enough idle budget or the callback times out.
+      if (!deadline.didTimeout && deadline.timeRemaining() < IDLE_MIN_BUDGET_MS) {
+        scheduleIdlePersist(state)
+        return
+      }
+      persistNow(state)
+    }, { timeout: 8000 })
+    return
+  }
+  if (typeof MessageChannel !== 'undefined') {
+    const mc = new MessageChannel()
+    mc.port1.onmessage = () => { persistNow(state); mc.port1.close() }
+    mc.port2.postMessage(null)
+    return
+  }
+  setTimeout(() => persistNow(state), 0)
+}
 
 // ---------------------------------------------------------------------------
-// persistNow — fast deferred save (uncompressed first, compressed fallback).
-// Used by the debounce path when the browser is idle.
+// persistNow — fast deferred save.
+// Primary path writes plain JSON (no compression) to avoid CPU spikes while
+// editing. Compression is used only as quota fallback.
 // ---------------------------------------------------------------------------
 function persistNow(state: GridProjectsState): void {
   if (typeof window === 'undefined') return
-  // Always compress — SVG data URLs compress 5-10x, keeping writes fast and
-  // well within localStorage quota even for large grids.
   const rawJson = JSON.stringify(state)
-  const encoded = `${COMPRESSED_PREFIX}${compressToUTF16(rawJson)}`
+  let payload = rawJson
   let wroteLocal = false
   try {
-    window.localStorage.setItem(GRID_PROJECTS_STORAGE_KEY, encoded)
+    window.localStorage.setItem(GRID_PROJECTS_STORAGE_KEY, payload)
     wroteLocal = true
   } catch {
-    console.warn('[grid-builder] localStorage quota exceeded — falling back to session/window.name')
+    // localStorage may overflow with big SVG payloads. Fallback to compressed write.
+    try {
+      payload = `${COMPRESSED_PREFIX}${compressToUTF16(rawJson)}`
+      window.localStorage.setItem(GRID_PROJECTS_STORAGE_KEY, payload)
+      wroteLocal = true
+    } catch {
+      // noop: session/window.name fallback below
+    }
   }
   try {
-    window.sessionStorage.setItem(GRID_PROJECTS_SESSION_STORAGE_KEY, encoded)
+    window.sessionStorage.setItem(GRID_PROJECTS_SESSION_STORAGE_KEY, payload)
   } catch { /* noop */ }
   if (!wroteLocal) {
+    // window.name path remains compressed to keep payload short and durable.
     writeWindowNameState(state)
   }
 }
@@ -50,7 +85,13 @@ function persistNowForced(state: GridProjectsState): void {
   // Compress once — reuse for all targets
   const rawJson = JSON.stringify(state)
   const encoded = `${COMPRESSED_PREFIX}${compressToUTF16(rawJson)}`
-  try { window.localStorage.setItem(GRID_PROJECTS_STORAGE_KEY, encoded) } catch { /* noop */ }
+  try {
+    window.localStorage.setItem(GRID_PROJECTS_STORAGE_KEY, encoded)
+  } catch {
+    // If local write fails (quota/private mode), clear stale local copy
+    // so loader can pick fresher session/window-name state.
+    try { window.localStorage.removeItem(GRID_PROJECTS_STORAGE_KEY) } catch { /* noop */ }
+  }
   try { window.sessionStorage.setItem(GRID_PROJECTS_SESSION_STORAGE_KEY, encoded) } catch { /* noop */ }
   // window.name is always written as last-resort — survives page reloads within the same tab
   writeWindowNameState(state)
@@ -137,14 +178,155 @@ function writeWindowNameState(state: GridProjectsState): void {
   }
 }
 
-function broadcastGridPackage(pkg: GridPackage | null): void {
+function broadcastGridPackage(detail: {
+  pkg: GridPackage | null
+  mode: RuntimeDeviceMode
+  desktopPkg: GridPackage | null
+  mobilePkg: GridPackage | null
+}): void {
   if (typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') return
   try {
     const channel = new BroadcastChannel(GRID_PACKAGE_BROADCAST_CHANNEL)
-    channel.postMessage({ pkg })
+    channel.postMessage(detail)
     channel.close()
   } catch {
     // noop
+  }
+}
+
+type RuntimeDeviceMode = 'desktop' | 'mobile'
+
+type RuntimePackagesSnapshot = {
+  version: 1
+  updatedAt: string
+  desktopPkg: GridPackage | null
+  mobilePkg: GridPackage | null
+}
+
+function detectRuntimeDeviceMode(): RuntimeDeviceMode {
+  if (typeof window === 'undefined') return 'desktop'
+  if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 600px)').matches) {
+    return 'mobile'
+  }
+  return 'desktop'
+}
+
+function selectProjectPackage(project: GridProject | undefined, mode: RuntimeDeviceMode): GridPackage | null {
+  if (!project) return null
+  // Runtime safety: if mobile package exists but is effectively empty/broken,
+  // fallback to desktop package so the game never renders a shifted/blank grid.
+  const hasRenderableMobilePkg =
+    Boolean(project.mobilePkg) &&
+    Array.isArray(project.mobilePkg?.layers) &&
+    project.mobilePkg.layers.length > 0
+  const pkg = mode === 'mobile'
+    ? (hasRenderableMobilePkg ? project.mobilePkg! : project.pkg)
+    : project.pkg
+  return normalizeGridPackage(pkg)
+}
+
+function saveRuntimePackagesSnapshot(
+  desktopPkg: GridPackage | null,
+  mobilePkg: GridPackage | null,
+): void {
+  if (typeof window === 'undefined') return
+  const payload: RuntimePackagesSnapshot = {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    desktopPkg,
+    mobilePkg,
+  }
+  const raw = JSON.stringify(payload)
+  let encoded = raw
+  let wroteLocal = false
+  try {
+    window.localStorage.setItem(GRID_RUNTIME_PACKAGES_STORAGE_KEY, encoded)
+    wroteLocal = true
+  } catch {
+    try {
+      encoded = `${COMPRESSED_PREFIX}${compressToUTF16(raw)}`
+      window.localStorage.setItem(GRID_RUNTIME_PACKAGES_STORAGE_KEY, encoded)
+      wroteLocal = true
+    } catch {
+      // Make room for the runtime snapshot (critical for cross-tab refresh consistency).
+      // The full builder projects payload is much larger and can be reconstructed later.
+      try { window.localStorage.removeItem(GRID_PROJECTS_STORAGE_KEY) } catch { /* noop */ }
+      try {
+        window.localStorage.setItem(GRID_RUNTIME_PACKAGES_STORAGE_KEY, encoded)
+        wroteLocal = true
+      } catch {
+        try { window.localStorage.removeItem(GRID_RUNTIME_PACKAGES_STORAGE_KEY) } catch { /* noop */ }
+      }
+    }
+  }
+  try {
+    window.sessionStorage.setItem(GRID_RUNTIME_PACKAGES_SESSION_STORAGE_KEY, encoded)
+  } catch {
+    // noop
+  }
+  // Keep window.name as last durable fallback (same-tab refresh safe).
+  try {
+    let root: Record<string, unknown> = {}
+    if (window.name) {
+      const parsed = JSON.parse(window.name) as Record<string, unknown>
+      if (parsed && typeof parsed === 'object') root = parsed
+    }
+    root[GRID_RUNTIME_PACKAGES_WINDOW_NAME_KEY] = encoded
+    window.name = JSON.stringify(root)
+  } catch {
+    // noop
+  }
+  if (!wroteLocal) {
+    // no-op; session/window.name may still persist successfully
+  }
+}
+
+function loadRuntimePackagesSnapshot(): RuntimePackagesSnapshot | null {
+  if (typeof window === 'undefined') return null
+  const decodeSnapshotRaw = (raw: string | null): RuntimePackagesSnapshot | null => {
+    if (!raw) return null
+    try {
+      const json = raw.startsWith(COMPRESSED_PREFIX)
+        ? (decompressFromUTF16(raw.slice(COMPRESSED_PREFIX.length)) ?? '')
+        : raw
+      if (!json) return null
+      const parsed = JSON.parse(json) as RuntimePackagesSnapshot
+      if (parsed?.version !== 1) return null
+      return {
+        version: 1,
+        updatedAt: parsed.updatedAt,
+        desktopPkg: parsed.desktopPkg ? normalizeGridPackage(parsed.desktopPkg) : null,
+        mobilePkg: parsed.mobilePkg ? normalizeGridPackage(parsed.mobilePkg) : null,
+      }
+    } catch {
+      return null
+    }
+  }
+  try {
+    const localSnapshot = decodeSnapshotRaw(window.localStorage.getItem(GRID_RUNTIME_PACKAGES_STORAGE_KEY))
+    const sessionSnapshot = decodeSnapshotRaw(window.sessionStorage.getItem(GRID_RUNTIME_PACKAGES_SESSION_STORAGE_KEY))
+    let windowNameSnapshot: RuntimePackagesSnapshot | null = null
+    try {
+      if (window.name) {
+        const parsedRoot = JSON.parse(window.name) as Record<string, unknown>
+        const raw = parsedRoot?.[GRID_RUNTIME_PACKAGES_WINDOW_NAME_KEY]
+        windowNameSnapshot = decodeSnapshotRaw(typeof raw === 'string' ? raw : null)
+      }
+    } catch {
+      // noop
+    }
+    const candidates = [localSnapshot, sessionSnapshot, windowNameSnapshot].filter(
+      (item): item is RuntimePackagesSnapshot => item !== null,
+    )
+    if (candidates.length === 0) return null
+    candidates.sort((a, b) => {
+      const ta = Date.parse(a.updatedAt ?? '')
+      const tb = Date.parse(b.updatedAt ?? '')
+      return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0)
+    })
+    return candidates[0]
+  } catch {
+    return null
   }
 }
 
@@ -165,12 +347,22 @@ export function saveGridPackage(pkg: GridPackage): void {
   })
 }
 
-export function loadGridPackage(): GridPackage | null {
+export function loadGridPackage(deviceMode?: RuntimeDeviceMode): GridPackage | null {
+  const runtimeMode = deviceMode ?? detectRuntimeDeviceMode()
+  // Prefer latest explicitly published runtime snapshot.
+  const runtimeSnapshot = loadRuntimePackagesSnapshot()
+  if (runtimeSnapshot) {
+    const fromSnapshot = runtimeMode === 'mobile' ? runtimeSnapshot.mobilePkg : runtimeSnapshot.desktopPkg
+    if (fromSnapshot) return fromSnapshot
+  }
+
   const projectsState = loadGridProjectsState()
   const active = projectsState.projects.find(
     (project) => project.id === projectsState.activeProjectId,
   )
-  if (active) return normalizeGridPackage(active.pkg)
+  if (active) {
+    return selectProjectPackage(active, runtimeMode)
+  }
 
   // Legacy fallback
   if (typeof window === 'undefined') return null
@@ -228,6 +420,14 @@ export function normalizeGridPackage(pkg: GridPackage): GridPackage {
   if (Array.isArray(pkg.layers)) {
     pkg.layers = pkg.layers.map((layer) => ({
       ...layer,
+      originalWidth:
+        typeof layer.originalWidth === 'number' && layer.originalWidth > 0
+          ? layer.originalWidth
+          : (typeof layer.width === 'number' && layer.width > 0 ? layer.width : 1),
+      originalHeight:
+        typeof layer.originalHeight === 'number' && layer.originalHeight > 0
+          ? layer.originalHeight
+          : (typeof layer.height === 'number' && layer.height > 0 ? layer.height : 1),
       // Ensure zoneId — prevents a post-mount useEffect re-render in the builder
       zoneId: layer.zoneId ?? (`zone_${String(layer.id).replace(/[^a-zA-Z0-9_]/g, '_')}` as import('../../../game/types').BetZoneId),
       stateStyles: {
@@ -241,6 +441,9 @@ export function normalizeGridPackage(pkg: GridPackage): GridPackage {
       locked: layer.locked ?? false,
       animation: {
         preset: layer.animation?.preset ?? 'none',
+        trigger: layer.animation?.trigger ?? 'while-active',
+        fromState: layer.animation?.fromState ?? 'any',
+        toState: layer.animation?.toState ?? 'any',
         durationMs: layer.animation?.durationMs ?? 220,
         delayMs: layer.animation?.delayMs ?? 0,
         easing: layer.animation?.easing ?? 'ease-out',
@@ -311,24 +514,30 @@ export function loadGridProjectsState(): GridProjectsState {
       return parsed
     }
 
+    const stateUpdatedAtScore = (state: GridProjectsState | null): number => {
+      if (!state || !Array.isArray(state.projects) || state.projects.length === 0) return 0
+      let maxTs = 0
+      for (const project of state.projects) {
+        const ts = Date.parse(project.updatedAt ?? '')
+        if (Number.isFinite(ts) && ts > maxTs) maxTs = ts
+      }
+      return maxTs
+    }
+
     const localRaw = window.localStorage.getItem(GRID_PROJECTS_STORAGE_KEY)
-    const localState = hydrateFromRaw(localRaw)
-    if (localState) {
-      inMemoryProjectsState = localState
-      return localState
-    }
-
     const sessionRaw = window.sessionStorage.getItem(GRID_PROJECTS_SESSION_STORAGE_KEY)
+    const localState = hydrateFromRaw(localRaw)
     const sessionState = hydrateFromRaw(sessionRaw)
-    if (sessionState) {
-      inMemoryProjectsState = sessionState
-      return sessionState
-    }
-
     const windowNameState = readWindowNameState()
-    if (windowNameState) {
-      inMemoryProjectsState = windowNameState
-      return windowNameState
+
+    const candidates = [localState, sessionState, windowNameState].filter(
+      (state): state is GridProjectsState => state !== null,
+    )
+
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => stateUpdatedAtScore(b) - stateUpdatedAtScore(a))
+      inMemoryProjectsState = candidates[0]
+      return candidates[0]
     }
   } catch {
     // noop
@@ -375,7 +584,8 @@ export function saveGridProjectsState(state: GridProjectsState): void {
     idlePersistHandle = null
   }
 
-  // Debounce: wait 800ms of inactivity, then write in the next macrotask.
+  // Debounce: wait for a longer idle window before serializing large SVG payloads.
+  // This keeps typing/dragging smooth while preserving autosave reliability.
   // beforeunload (registered above) guarantees data is saved on page refresh/close.
   persistTimer = setTimeout(() => {
     persistTimer = null
@@ -383,21 +593,26 @@ export function saveGridProjectsState(state: GridProjectsState): void {
     if (!snapshot) return
     pendingPersistState = null
 
-    // Defer actual write to a separate macrotask so it can't block the current frame.
-    if (typeof window.requestIdleCallback === 'function') {
-      // rIC fires when browser is idle — no forced timeout so it never interrupts interaction
-      idlePersistHandle = window.requestIdleCallback(() => {
-        idlePersistHandle = null
-        persistNow(snapshot)
-      })
-    } else if (typeof MessageChannel !== 'undefined') {
-      const mc = new MessageChannel()
-      mc.port1.onmessage = () => { persistNow(snapshot); mc.port1.close() }
-      mc.port2.postMessage(null)
-    } else {
-      setTimeout(() => persistNow(snapshot), 0)
-    }
-  }, 800)
+    // Persist only when browser grants enough idle budget,
+    // so JSON serialization does not steal interactive frames.
+    scheduleIdlePersist(snapshot)
+  }, 3500)
+}
+
+// Force immediate durable save (used by explicit user actions like "Update Game").
+export function saveGridProjectsStateNow(state: GridProjectsState): void {
+  inMemoryProjectsState = state
+  if (typeof window === 'undefined') return
+  pendingPersistState = null
+  if (persistTimer !== null) {
+    clearTimeout(persistTimer)
+    persistTimer = null
+  }
+  if (idlePersistHandle !== null && typeof window.cancelIdleCallback === 'function') {
+    window.cancelIdleCallback(idlePersistHandle)
+    idlePersistHandle = null
+  }
+  persistNowForced(state)
 }
 
 // Synchronously update the in-memory state — called from apply()'s setState updater
@@ -406,11 +621,17 @@ export function touchInMemoryState(state: GridProjectsState): void {
   inMemoryProjectsState = state
 }
 
-export function publishGridProjectsState(state?: GridProjectsState): void {
+export function publishGridProjectsState(state?: GridProjectsState, deviceMode?: RuntimeDeviceMode): void {
   if (typeof window === 'undefined') return
   const runtimeState = state ?? inMemoryProjectsState ?? loadGridProjectsState()
   const active = runtimeState.projects.find((project) => project.id === runtimeState.activeProjectId)
-  window.dispatchEvent(new CustomEvent(GRID_PACKAGE_EVENT, { detail: { pkg: active?.pkg ?? null } }))
-  broadcastGridPackage(active?.pkg ?? null)
+  const mode = deviceMode ?? detectRuntimeDeviceMode()
+  const desktopPkg = active ? selectProjectPackage(active, 'desktop') : null
+  const mobilePkg = active ? selectProjectPackage(active, 'mobile') : null
+  saveRuntimePackagesSnapshot(desktopPkg, mobilePkg)
+  const pkg = mode === 'mobile' ? mobilePkg : desktopPkg
+  const detail = { pkg, mode, desktopPkg, mobilePkg }
+  window.dispatchEvent(new CustomEvent(GRID_PACKAGE_EVENT, { detail }))
+  broadcastGridPackage(detail)
 }
 

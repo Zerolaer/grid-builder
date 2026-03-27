@@ -1,8 +1,9 @@
 import { initialGameState } from './defaults'
-import type { BetZoneId, ChipValue, GamePhase, GameState } from './types'
+import type { BetZoneId, ChipValue, GamePhase, GameState, GridViewState } from './types'
 
 export type GameAction =
   | { type: 'SET_PHASE'; phase: GamePhase }
+  | { type: 'SET_GRID_VIEW_STATE'; gridViewState: GridViewState }
   | { type: 'SET_COUNTDOWN'; sec: number }
   | { type: 'TICK' }
   | { type: 'SET_SELECTED_CHIP'; value: ChipValue }
@@ -19,6 +20,8 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
   switch (action.type) {
     case 'SET_PHASE':
       return { ...state, phase: action.phase }
+    case 'SET_GRID_VIEW_STATE':
+      return { ...state, gridViewState: action.gridViewState }
     case 'SET_COUNTDOWN':
       return { ...state, countdownSec: Math.max(0, action.sec) }
     case 'TICK': {

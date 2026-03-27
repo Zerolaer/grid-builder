@@ -6,6 +6,7 @@ import { GameShell } from './components/layout/GameShell'
 import { TopBar } from './components/top/TopBar'
 import { GridCanvasBuilder } from './dev/GridCanvasBuilder'
 import { GridZoneEditor } from './dev/GridZoneEditor'
+import { GridRuntimeComparePage } from './dev/GridRuntimeComparePage'
 import { LoginPage } from './auth/LoginPage'
 
 function App() {
@@ -19,6 +20,9 @@ function App() {
   }
   if (typeof window !== 'undefined' && window.location.pathname === '/dev/grid-builder') {
     return <GridCanvasBuilder />
+  }
+  if (typeof window !== 'undefined' && window.location.pathname === '/dev/grid-runtime-compare') {
+    return <GridRuntimeComparePage />
   }
 
   return (

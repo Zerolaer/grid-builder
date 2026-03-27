@@ -1,6 +1,6 @@
 import { useBettingOpen, useGame } from '../../game/GameContext'
 import type { BetZoneId } from '../../game/types'
-import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createDefaultGridPackage } from './builder/defaultPackage'
 import {
   GRID_PACKAGE_BROADCAST_CHANNEL,
@@ -58,27 +58,20 @@ function BetCell({
   )
 }
 
-function pxRect(x: number, y: number, w: number, h: number): CSSProperties {
-  const gridWidth = GRID_SKIN.baseWidth
-  const gridHeight = GRID_SKIN.baseHeight
+function pxRect(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  gridWidth: number,
+  gridHeight: number,
+): CSSProperties {
   return {
     left: `${(x / gridWidth) * 100}%`,
     top: `${(y / gridHeight) * 100}%`,
     width: `${(w / gridWidth) * 100}%`,
     height: `${(h / gridHeight) * 100}%`,
   }
-}
-
-function zoneVisualState(
-  zoneId: BetZoneId,
-  hovered: BetZoneId | null,
-  isOpen: boolean,
-  hasBet: boolean,
-): GridVisualState {
-  if (!isOpen) return 'disabled'
-  if (hovered === zoneId) return 'hover'
-  if (hasBet) return 'chipPlaced'
-  return 'default'
 }
 
 function resolveStateSvg(
@@ -148,16 +141,27 @@ function resolveLayerVisual(
 
 function layerAnimationStyle(
   layer: GridPackage['layers'][number],
+  prevState: GridVisualState,
   state: GridVisualState,
 ): CSSProperties {
   const animation = layer.animation ?? {
     preset: 'none',
+    trigger: 'while-active',
+    fromState: 'any',
+    toState: 'any',
     durationMs: 220,
     delayMs: 0,
     easing: 'ease-out',
     intensity: 1,
   }
   if (animation.preset === 'none') return {}
+
+  const fromMatches = animation.fromState === 'any' || animation.fromState === prevState
+  const toMatches = animation.toState === 'any' || animation.toState === state
+  const transitionChanged = prevState !== state
+
+  if (!toMatches) return {}
+  if (animation.trigger === 'on-transition' && (!transitionChanged || !fromMatches)) return {}
 
   const activeFactor = state === 'default' ? 0 : 1
   const intensity = Math.max(0, Math.min(3, animation.intensity ?? 1))
@@ -186,24 +190,71 @@ function layerAnimationStyle(
 }
 
 export function BettingGrid() {
+  const detectViewportMode = (): 'desktop' | 'mobile' => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'desktop'
+    return window.matchMedia('(max-width: 600px)').matches ? 'mobile' : 'desktop'
+  }
+
   const { state } = useGame()
   const isClosed = state.phase !== 'betting'
-  const globalGridState: 'open' | 'closed' = isClosed ? 'closed' : 'open'
-  const bettingOpen = useBettingOpen()
+  const globalGridState: 'open' | 'closed' =
+    state.gridViewState === 'auto'
+      ? (isClosed ? 'closed' : 'open')
+      : state.gridViewState
+  const [runtimeDeviceMode, setRuntimeDeviceMode] = useState<'desktop' | 'mobile'>(() => detectViewportMode())
   const [hoveredZoneId, setHoveredZoneId] = useState<BetZoneId | null>(null)
+  const previousLayerStateRef = useRef<Record<string, GridVisualState>>({})
+  const latestPublishedPackagesRef = useRef<{
+    desktop: GridPackage | null
+    mobile: GridPackage | null
+  }>({ desktop: null, mobile: null })
   const [gridPackage, setGridPackage] = useState<GridPackage>(() => {
-    return loadGridPackage() ?? createDefaultGridPackage()
+    return loadGridPackage(detectViewportMode()) ?? createDefaultGridPackage()
   })
 
   useEffect(() => {
+    const pickForMode = (
+      detail:
+        | {
+            pkg?: GridPackage | null
+            mode?: 'desktop' | 'mobile'
+            desktopPkg?: GridPackage | null
+            mobilePkg?: GridPackage | null
+          }
+        | undefined,
+      mode: 'desktop' | 'mobile',
+    ): GridPackage | null => {
+      const desktopPkg = detail?.desktopPkg ?? null
+      const mobilePkg = detail?.mobilePkg ?? null
+      if (desktopPkg?.version === 1) {
+        latestPublishedPackagesRef.current.desktop = normalizeGridPackage(structuredClone(desktopPkg))
+      }
+      if (mobilePkg?.version === 1) {
+        latestPublishedPackagesRef.current.mobile = normalizeGridPackage(structuredClone(mobilePkg))
+      }
+      const selected =
+        mode === 'mobile'
+          ? latestPublishedPackagesRef.current.mobile
+          : latestPublishedPackagesRef.current.desktop
+      if (selected?.version === 1) return normalizeGridPackage(structuredClone(selected))
+      const fallbackPkg = detail?.pkg ?? null
+      if (fallbackPkg?.version === 1) return normalizeGridPackage(structuredClone(fallbackPkg))
+      return null
+    }
+
     const reloadPackage = (event?: Event) => {
-      const maybeCustom = event as CustomEvent<{ pkg?: GridPackage | null }> | undefined
-      const pkgFromEvent = maybeCustom?.detail?.pkg
+      const maybeCustom = event as CustomEvent<{
+        pkg?: GridPackage | null
+        mode?: 'desktop' | 'mobile'
+        desktopPkg?: GridPackage | null
+        mobilePkg?: GridPackage | null
+      }> | undefined
+      const pkgFromEvent = pickForMode(maybeCustom?.detail, runtimeDeviceMode)
       if (pkgFromEvent && pkgFromEvent.version === 1) {
-        setGridPackage(normalizeGridPackage(structuredClone(pkgFromEvent)))
+        setGridPackage(pkgFromEvent)
         return
       }
-      setGridPackage(loadGridPackage() ?? createDefaultGridPackage())
+      setGridPackage(loadGridPackage(runtimeDeviceMode) ?? createDefaultGridPackage())
     }
 
     // Only respond to explicit publish events (Update Game button) — NOT storage changes
@@ -212,19 +263,60 @@ export function BettingGrid() {
       typeof BroadcastChannel !== 'undefined'
         ? new BroadcastChannel(GRID_PACKAGE_BROADCAST_CHANNEL)
         : null
-    const onChannelMessage = (message: MessageEvent<{ pkg?: GridPackage | null }>) => {
-      const pkgFromMessage = message.data?.pkg
+    const onChannelMessage = (message: MessageEvent<{
+      pkg?: GridPackage | null
+      mode?: 'desktop' | 'mobile'
+      desktopPkg?: GridPackage | null
+      mobilePkg?: GridPackage | null
+    }>) => {
+      const pkgFromMessage = pickForMode(message.data, runtimeDeviceMode)
       if (pkgFromMessage && pkgFromMessage.version === 1) {
-        setGridPackage(normalizeGridPackage(structuredClone(pkgFromMessage)))
+        setGridPackage(pkgFromMessage)
       }
     }
     channel?.addEventListener('message', onChannelMessage)
+
     return () => {
       window.removeEventListener(GRID_PACKAGE_EVENT, reloadPackage as EventListener)
       channel?.removeEventListener('message', onChannelMessage)
       channel?.close()
     }
+  }, [runtimeDeviceMode])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const media = window.matchMedia('(max-width: 600px)')
+    const onViewportModeChange = () => {
+      setRuntimeDeviceMode(detectViewportMode())
+    }
+    media.addEventListener('change', onViewportModeChange)
+    const onRuntimeViewportModeChange = (event: Event) => {
+      const custom = event as CustomEvent<{ mobile?: boolean }>
+      const forcedMobile = custom.detail?.mobile
+      if (typeof forcedMobile === 'boolean') {
+        setRuntimeDeviceMode(forcedMobile ? 'mobile' : 'desktop')
+        return
+      }
+      setRuntimeDeviceMode(detectViewportMode())
+    }
+    window.addEventListener('iki-runtime:viewport-mode-changed', onRuntimeViewportModeChange as EventListener)
+    return () => {
+      media.removeEventListener('change', onViewportModeChange)
+      window.removeEventListener(
+        'iki-runtime:viewport-mode-changed',
+        onRuntimeViewportModeChange as EventListener,
+      )
+    }
   }, [])
+
+  useEffect(() => {
+    const published = latestPublishedPackagesRef.current[runtimeDeviceMode]
+    if (published?.version === 1) {
+      setGridPackage(normalizeGridPackage(structuredClone(published)))
+      return
+    }
+    setGridPackage(loadGridPackage(runtimeDeviceMode) ?? createDefaultGridPackage())
+  }, [runtimeDeviceMode])
   const frameWidth = gridPackage.frame.width > 0 ? gridPackage.frame.width : GRID_SKIN.baseWidth
   const frameHeight = gridPackage.frame.height > 0 ? gridPackage.frame.height : GRID_SKIN.baseHeight
 
@@ -275,23 +367,22 @@ export function BettingGrid() {
               : (layer.globalVisibility?.closed ?? true)
           if (!globalVisible) return null
 
-          const hasBet = layer.zoneId ? (state.bets[layer.zoneId] ?? 0) > 0 : false
           const activeState: GridVisualState = layer.zoneId
-            ? (globalGridState === 'closed'
-                ? (hasBet ? 'chipPlaced' : 'default')
-                : zoneVisualState(layer.zoneId, hoveredZoneId, bettingOpen, hasBet))
+            ? (globalGridState === 'open' && hoveredZoneId === layer.zoneId ? 'hover' : 'default')
             : 'default'
           const visual = resolveLayerVisual(
             gridPackage,
             layer,
             activeState,
           )
-          const animationStyle = layerAnimationStyle(layer, activeState)
+          const previousState = previousLayerStateRef.current[layer.id] ?? activeState
+          const animationStyle = layerAnimationStyle(layer, previousState, activeState)
           const animationOpacity = animationStyle.opacity as number | undefined
           if (!visual.visible) return null
           return {
             id: layer.id,
             name: layer.name,
+            activeState,
             src: visual.src,
             style: {
               left: `${(visual.rect.x / frameWidth) * 100}%`,
@@ -307,9 +398,15 @@ export function BettingGrid() {
             } as CSSProperties,
           }
         })
-        .filter((item): item is { id: string; name: string; src: string; style: CSSProperties } => item !== null),
-    [gridPackage, globalGridState, state.bets, hoveredZoneId, bettingOpen],
+        .filter((item): item is { id: string; name: string; activeState: 'default' | 'hover'; src: string; style: CSSProperties } => item !== null),
+    [gridPackage, globalGridState, state.bets, hoveredZoneId],
   )
+
+  useEffect(() => {
+    const next: Record<string, GridVisualState> = {}
+    for (const layer of renderLayers) next[layer.id] = layer.activeState
+    previousLayerStateRef.current = next
+  }, [renderLayers])
   const perspective = isClosed && (gridPackage.global?.closedMode ?? 'tilted') === 'tilted'
   const runtimeScale =
     typeof gridPackage.frame?.scale === 'number' && gridPackage.frame.scale > 0
@@ -326,6 +423,9 @@ export function BettingGrid() {
   const clipRightPct = ((frameWidth - (clipRect.x + clipRect.width)) / frameWidth) * 100
   const clipBottomPct = ((frameHeight - (clipRect.y + clipRect.height)) / frameHeight) * 100
   const clipLeftPct = (clipRect.x / frameWidth) * 100
+  const runtimeClipPath = perspective
+    ? `inset(${clipTopPct}% ${clipRightPct}% ${clipBottomPct}% ${clipLeftPct}%)`
+    : 'none'
 
   return (
     <div
@@ -345,7 +445,7 @@ export function BettingGrid() {
           aspectRatio: `${frameWidth} / ${frameHeight}`,
           height: 'auto',
           minHeight: 0,
-          clipPath: `inset(${clipTopPct}% ${clipRightPct}% ${clipBottomPct}% ${clipLeftPct}%)`,
+          clipPath: runtimeClipPath,
         }}
       >
         <div className="betting-grid__asset-layer" aria-hidden>
@@ -361,8 +461,8 @@ export function BettingGrid() {
         </div>
         <div className="betting-grid__zones">
           {runtimeZones.map((zone) => {
-            const hasBet = (state.bets[zone.id] ?? 0) > 0
-            const visual = zoneVisualState(zone.id, hoveredZoneId, bettingOpen, hasBet)
+            const visual: GridVisualState =
+              globalGridState === 'open' && hoveredZoneId === zone.id ? 'hover' : 'default'
             const isHovered = hoveredZoneId === zone.id
             return (
               <BetCell
@@ -370,7 +470,7 @@ export function BettingGrid() {
                 zone={zone}
                 className={`bet-cell--${zone.skin ?? 'default'} bet-cell--state-${visual}`}
                 style={{
-                  ...pxRect(zone.rect.x, zone.rect.y, zone.rect.w, zone.rect.h),
+                  ...pxRect(zone.rect.x, zone.rect.y, zone.rect.w, zone.rect.h, frameWidth, frameHeight),
                   background: 'transparent',
                 }}
                 isHovered={isHovered}

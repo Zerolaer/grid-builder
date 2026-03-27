@@ -2,10 +2,19 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useGameState } from '../../game/GameContext'
 
 const GRAPH_SAMPLES = 90
-const FRAME_BUFFER_SIZE = 240
 const TARGET_FRAME_MS = 16.67
 const MAX_GRAPH_FRAME_MS = 50
-const UPDATE_INTERVAL_MS = 120
+const UPDATE_INTERVAL_MS = 100
+const ROLLING_WINDOW_MS = 5000
+const FPS_WINDOW_MS = 1000
+const DROP_FRAME_MS = 1000 / 30
+const HITCH_FRAME_MS = 50
+const MAX_VALID_FRAME_MS = 250
+
+type FrameSample = {
+  t: number
+  dt: number
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
@@ -17,17 +26,20 @@ function percentile(sortedValues: number[], p: number): number {
   return sortedValues[idx]
 }
 
-export function PerformanceOverlay() {
+export function PerformanceOverlay({ visible = true }: { visible?: boolean }) {
   const state = useGameState()
   const [fps, setFps] = useState(0)
+  const [currentFps, setCurrentFps] = useState(0)
   const [frameMs, setFrameMs] = useState(0)
   const [frameP99Ms, setFrameP99Ms] = useState(0)
   const [frameMinMs, setFrameMinMs] = useState(0)
   const [frameMaxMs, setFrameMaxMs] = useState(0)
+  const [dropPercent, setDropPercent] = useState(0)
+  const [hitchCount, setHitchCount] = useState(0)
   const [frameSamples, setFrameSamples] = useState<number[]>([])
   const [memUsedMb, setMemUsedMb] = useState<number | null>(null)
   const [memLimitMb, setMemLimitMb] = useState<number | null>(null)
-  const frameBufferRef = useRef<number[]>([])
+  const frameBufferRef = useRef<FrameSample[]>([])
 
   useEffect(() => {
     let rafId = 0
@@ -39,31 +51,49 @@ export function PerformanceOverlay() {
       if (disposed) return
       const delta = now - last
       last = now
-      if (delta <= 0 || !Number.isFinite(delta)) {
+      if (
+        delta <= 0 ||
+        !Number.isFinite(delta) ||
+        delta > MAX_VALID_FRAME_MS ||
+        document.visibilityState !== 'visible'
+      ) {
         rafId = requestAnimationFrame(tick)
         return
       }
       updateAccumulator += delta
 
       const buffer = frameBufferRef.current
-      buffer.push(delta)
-      if (buffer.length > FRAME_BUFFER_SIZE) {
-        buffer.splice(0, buffer.length - FRAME_BUFFER_SIZE)
-      }
+      buffer.push({ t: now, dt: delta })
+      const oldestAllowedTs = now - ROLLING_WINDOW_MS
+      while (buffer.length > 0 && buffer[0].t < oldestAllowedTs) buffer.shift()
 
       if (updateAccumulator >= UPDATE_INTERVAL_MS) {
-        const sorted = [...buffer].sort((a, b) => a - b)
-        const avgFrameMs = buffer.reduce((sum, value) => sum + value, 0) / Math.max(1, buffer.length)
+        const fpsWindowStart = now - FPS_WINDOW_MS
+        const fpsWindowFrames = buffer.filter((sample) => sample.t >= fpsWindowStart)
+        const fpsWindowDurationMs = fpsWindowFrames.reduce((sum, sample) => sum + sample.dt, 0)
+        const exactFps =
+          fpsWindowDurationMs > 0 ? (fpsWindowFrames.length * 1000) / fpsWindowDurationMs : 0
+
+        const sorted = buffer.map((sample) => sample.dt).sort((a, b) => a - b)
+        const totalWindowDurationMs = sorted.reduce((sum, value) => sum + value, 0)
+        const avgFrameMs = totalWindowDurationMs / Math.max(1, sorted.length)
         const p99FrameMs = percentile(sorted, 0.99)
         const minFrameMs = sorted[0] ?? 0
         const maxFrameMs = sorted[sorted.length - 1] ?? 0
-        const nextFps = avgFrameMs > 0 ? Math.round(1000 / avgFrameMs) : 0
+        const nextFps =
+          totalWindowDurationMs > 0 ? (sorted.length * 1000) / totalWindowDurationMs : 0
+        const dropFrames = sorted.filter((value) => value > DROP_FRAME_MS).length
+        const hitches = sorted.filter((value) => value > HITCH_FRAME_MS).length
+        const nextDropPercent = sorted.length > 0 ? (dropFrames / sorted.length) * 100 : 0
 
         setFps(nextFps)
+        setCurrentFps(exactFps)
         setFrameMs(avgFrameMs)
         setFrameP99Ms(p99FrameMs)
         setFrameMinMs(minFrameMs)
         setFrameMaxMs(maxFrameMs)
+        setDropPercent(nextDropPercent)
+        setHitchCount(hitches)
         setFrameSamples((current) => {
           const next = [...current, p99FrameMs]
           return next.length > GRAPH_SAMPLES ? next.slice(next.length - GRAPH_SAMPLES) : next
@@ -107,11 +137,13 @@ export function PerformanceOverlay() {
 
   const activeZones = Object.keys(state.bets).length
 
+  if (!visible) return null
+
   return (
     <aside className="performance-overlay" aria-label="Performance overlay">
       <div className="performance-overlay__header">
         <strong>Perf</strong>
-        <span>{fps} FPS avg</span>
+        <span>{currentFps.toFixed(1)} FPS now / {fps.toFixed(1)} FPS avg</span>
       </div>
 
       <div className="performance-overlay__graph" aria-hidden>
@@ -128,6 +160,14 @@ export function PerformanceOverlay() {
         <div>
           <dt>1% low</dt>
           <dd>{onePercentLowFps} FPS</dd>
+        </div>
+        <div>
+          <dt>Drops</dt>
+          <dd>{dropPercent.toFixed(1)}%</dd>
+        </div>
+        <div>
+          <dt>Hitches</dt>
+          <dd>{hitchCount} / 5s</dd>
         </div>
         <div>
           <dt>Frame p99</dt>

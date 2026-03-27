@@ -47,9 +47,27 @@ function TopIcon({
   )
 }
 
+type MobileResultTone = 'blue' | 'green' | 'red'
+type MobileResultItem = { sum: number; dice: [number, number, number]; tone: MobileResultTone }
+
+function MobileResultCard({ item }: { item: MobileResultItem }) {
+  return (
+    <span className="top-bar-mobile__card" role="listitem">
+      <span className={`top-bar-mobile__card-sum top-bar-mobile__card-sum--${item.tone}`}>{item.sum}</span>
+      <span className="top-bar-mobile__card-dice">{item.dice.join(' ')}</span>
+    </span>
+  )
+}
+
 export function TopBar() {
   const { state } = useGame()
   const [clock, setClock] = useState(() => formatClock(new Date()))
+  const recentRoadmap = state.roadmap.slice(-12)
+  const mobileResults: MobileResultItem[] = recentRoadmap.map((item) => {
+    if (item === 'S') return { sum: 10, dice: [2, 4, 4], tone: 'blue' }
+    if (item === 'B') return { sum: 15, dice: [5, 5, 5], tone: 'green' }
+    return { sum: 13, dice: [3, 4, 6], tone: 'red' }
+  })
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(formatClock(new Date())), 1_000)
@@ -58,7 +76,7 @@ export function TopBar() {
 
   return (
     <header className="top-bar top-bar-figma">
-      <div className="top-bar-figma__left">
+      <div className="top-bar-figma__desktop top-bar-figma__left">
         <div className="top-bar-figma__name-wrap">
           <button
             type="button"
@@ -79,7 +97,7 @@ export function TopBar() {
         </span>
       </div>
 
-      <div className="top-bar-figma__center">
+      <div className="top-bar-figma__desktop top-bar-figma__center">
         <a
           href="/dev/grid-builder"
           target="_blank"
@@ -92,13 +110,32 @@ export function TopBar() {
         </a>
       </div>
 
-      <div className="top-bar-figma__right">
+      <div className="top-bar-figma__desktop top-bar-figma__right">
         <TopIcon label="Sound" iconSrc={ICON_SOUND_SRC} />
         <TopIcon label="Settings" iconSrc={ICON_SETTINGS_SRC} />
         <TopIcon label="History" iconSrc={ICON_HISTORY_SRC} />
         <TopIcon label="Help" iconSrc={ICON_HELP_SRC} />
         <TopIcon label="Support" iconSrc={ICON_SUPPORT_SRC} />
         <TopIcon label="Fullscreen" iconSrc={ICON_FULLSCREEN_SRC} />
+      </div>
+
+      <div className="top-bar-mobile" aria-hidden={false}>
+        <div className="top-bar-mobile__history" role="list" aria-label="Recent results">
+          {mobileResults.map((item, index) => (
+            <MobileResultCard key={`${item.tone}-${item.sum}-${index}`} item={item} />
+          ))}
+        </div>
+        <div className="top-bar-mobile__meta">
+          <span className="top-bar-mobile__balance-label">Balance:</span>
+          <span className="top-bar-mobile__balance-value">
+            ${state.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+          <span className="top-bar-mobile__time">{clock}</span>
+          <span className="top-bar-mobile__total-label">Total Bet:</span>
+          <span className="top-bar-mobile__total-value">
+            ${state.totalBet.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+        </div>
       </div>
     </header>
   )
